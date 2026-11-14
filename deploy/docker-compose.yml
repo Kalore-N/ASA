@@ -1,0 +1,11 @@
+services:
+  relay:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: asa-relay
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    volumes:
+      - ./relay-data:/data

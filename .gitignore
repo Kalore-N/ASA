@@ -1,0 +1,16 @@
+/target
+/.cargo
+/runtime
+/dist
+/.tools
+
+# Android / 跨平台构建环境
+/.android-sdk
+/.jdk21
+/.gradle-dist
+/.gradle-home
+/.android-avd
+/android/.gradle
+/android/app/build
+/android/local.properties
+/android/app/src/main/jniLibs

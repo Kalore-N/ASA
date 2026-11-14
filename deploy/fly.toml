@@ -1,0 +1,16 @@
+# Fly.io 部署模板。把 app 改成你自己的全局唯一名称。
+app = "asa-relay"
+primary_region = "sin"
+
+[build]
+  dockerfile = "deploy/Dockerfile"
+
+[[services]]
+  internal_port = 9000
+  protocol = "tcp"
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.ports]]
+    port = 9000
