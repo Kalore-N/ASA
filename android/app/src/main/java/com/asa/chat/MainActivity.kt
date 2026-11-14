@@ -56,11 +56,12 @@ class MainActivity : ComponentActivity() {
 
                 BackHandler(enabled = showSettings) { showSettings = false }
                 BackHandler(enabled = !showSettings && state.screen == Screen.Chat) {
-                    // 按返回键只把应用切到后台；只有菜单里的「退出群聊」才会停止连接。
-                    moveTaskToBack(true)
+                    // 返回键回到频道列表（主页），连接保持；只有确认「退出频道」才停止。
+                    vm.backToGroups()
                 }
                 BackHandler(enabled = !showSettings && state.screen == Screen.Groups) {
-                    vm.showConnect()
+                    // 频道列表就是主页，再按返回才回到桌面。
+                    moveTaskToBack(true)
                 }
 
                 if (showSettings) {

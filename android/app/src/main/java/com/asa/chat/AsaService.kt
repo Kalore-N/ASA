@@ -8,7 +8,7 @@ import android.os.IBinder
 
 /**
  * 前台服务：只负责让进程保持存活，节点与事件轮询仍由 AsaViewModel 持有。
- * 只有用户在界面里确认「退出群聊」时才会被停止。
+ * 只有用户在界面里确认「退出频道」时才会被停止。
  */
 class AsaService : Service() {
     override fun onCreate() {

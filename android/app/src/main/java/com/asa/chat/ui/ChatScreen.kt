@@ -169,12 +169,12 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
                         Spacer(Modifier.size(8.dp))
                         Column {
                             Text(
-                                state.roomName.ifBlank { "群 ${state.roomId.take(8)}" },
+                                state.roomName.ifBlank { "频道 ${state.roomId.take(8)}" },
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.SemiBold,
                             )
                             Text(
-                                "群 ${state.roomId.take(8)} · 在线 ${state.online} · 服主 ${state.hostNick}",
+                                "频道 ${state.roomId.take(8)} · 在线 ${state.online} · 服主 ${state.hostNick}",
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -204,7 +204,7 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
                                 },
                             )
                             DropdownMenuItem(
-                                text = { Text("修改群名称") },
+                                text = { Text("修改频道名称") },
                                 onClick = {
                                     showMenu = false
                                     showRename = true
@@ -225,10 +225,10 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
                                 },
                             )
                             DropdownMenuItem(
-                                text = { Text("切换群聊") },
+                                text = { Text("切换频道") },
                                 onClick = {
                                     showMenu = false
-                                    vm.switchToGroups()
+                                    vm.backToGroups()
                                 },
                             )
                             DropdownMenuItem(
@@ -240,7 +240,7 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
                             )
                             HorizontalDivider()
                             DropdownMenuItem(
-                                text = { Text("退出群聊", color = MaterialTheme.colorScheme.error) },
+                                text = { Text("退出频道", color = MaterialTheme.colorScheme.error) },
                                 onClick = {
                                     showMenu = false
                                     showExitConfirm = true
@@ -380,7 +380,7 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
         AlertDialog(
             onDismissRequest = { showExitConfirm = false },
             shape = DialogShape,
-            title = { Text("退出群聊？") },
+            title = { Text("退出频道？") },
             text = { Text("退出后将断开连接并停止后台运行；下次进入需要重新连接。") },
             confirmButton = {
                 TextButton(onClick = {
@@ -401,15 +401,15 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
         AlertDialog(
             onDismissRequest = { showRename = false },
             shape = DialogShape,
-            title = { Text("修改群名称（仅本机显示）") },
+            title = { Text("修改频道名称（仅本机显示）") },
             text = {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
                     singleLine = true,
                     shape = FieldShape,
-                    label = { Text("群名称") },
-                    placeholder = { Text("群 ${state.roomId.take(8)}") },
+                    label = { Text("频道名称") },
+                    placeholder = { Text("频道 ${state.roomId.take(8)}") },
                 )
             },
             confirmButton = {

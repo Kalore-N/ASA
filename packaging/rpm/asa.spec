@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           asa
-Version:        1.3.0
+Version:        1.3.1
 Release:        1%{?dist}
 Summary:        去中心化 TUI 群聊
 License:        MIT
@@ -9,7 +9,7 @@ URL:            https://github.com/Kalore-N/ASA
 BuildArch:      x86_64
 AutoReqProv:    no
 
-Source0:        asa-1.3.0
+Source0:        asa-1.3.1
 Source1:        asa.desktop
 Source2:        asa.1.gz
 Source3:        asa.png

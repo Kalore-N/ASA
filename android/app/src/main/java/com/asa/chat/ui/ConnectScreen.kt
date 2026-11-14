@@ -98,7 +98,7 @@ fun ConnectScreen(
                         fontWeight = FontWeight.Bold,
                     )
                     Text(
-                        text = "去中心化群聊 · 没有中心服务器",
+                        text = "去中心化频道 · 没有中心服务器",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 13.sp,
                     )
@@ -122,7 +122,7 @@ fun ConnectScreen(
                     vertical = 8.dp,
                 ),
             ) {
-                Text("群聊列表", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                Text("频道列表", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
             }
         }
 
@@ -207,7 +207,7 @@ fun ConnectScreen(
                 )
             } else {
                 Text(
-                    if (mode == "join") "加入群聊" else "创建群聊",
+                    if (mode == "join") "加入频道" else "创建频道",
                     fontWeight = FontWeight.SemiBold,
                 )
             }

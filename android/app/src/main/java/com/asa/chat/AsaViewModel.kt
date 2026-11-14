@@ -73,7 +73,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
             if (id.isBlank()) continue
             groups += SavedGroup(
                 id = id,
-                name = item.optString("name").ifBlank { "群 ${id.take(8)}" },
+                name = item.optString("name").ifBlank { "频道 ${id.take(8)}" },
                 lastUsed = item.optLong("last_used"),
                 active = item.optBoolean("active"),
             )
@@ -112,6 +112,12 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun enterGroup(roomId: String) {
+        if (roomId == _state.value.roomId &&
+            runCatching { NativeBridge.isRunning() }.getOrDefault(false)
+        ) {
+            _state.update { it.copy(screen = Screen.Chat) }
+            return
+        }
         val app = getApplication<Application>()
         val config = lastConfig ?: ConfigStore.load(app)
         start(
@@ -338,29 +344,16 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                 nick = it.nick,
                 groups = groups,
                 error = null,
-                info = "已退出群聊",
+                info = "已退出频道",
             )
         }
         reloadGroups(app)
     }
 
-    fun switchToGroups() {
-        val app = getApplication<Application>()
-        app.stopService(Intent(app, AsaService::class.java))
-        runCatching { NativeBridge.stop() }
-        _state.update {
-            it.copy(
-                screen = Screen.Groups,
-                messages = emptyList(),
-                members = emptyList(),
-                offers = emptyList(),
-                transfers = emptyList(),
-                roomId = "",
-                roomName = "",
-                replyTarget = null,
-            )
-        }
-        reloadGroups(app)
+    /// 回到频道列表（主页），但保持当前节点和后台服务运行。
+    fun backToGroups() {
+        _state.update { it.copy(screen = Screen.Groups) }
+        reloadGroups(getApplication())
     }
 
     fun renameGroup(roomId: String, name: String) {
@@ -381,7 +374,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
     fun clearMentioned() = _state.update { it.copy(mentioned = null) }
 
     override fun onCleared() {
-        // 后台服务保持节点运行；只有用户确认退出群聊时才调用 stop()。
+        // 后台服务保持节点运行；只有用户确认退出频道时才调用 stop()。
         pollJob.cancel()
         super.onCleared()
     }

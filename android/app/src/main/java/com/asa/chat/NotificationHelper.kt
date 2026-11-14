@@ -23,14 +23,14 @@ object NotificationHelper {
                 "消息",
                 NotificationManager.IMPORTANCE_DEFAULT,
             ).apply {
-                description = "群聊新消息"
+                description = "频道新消息"
             }
             val background = NotificationChannel(
                 CHANNEL_BACKGROUND,
                 "后台连接",
                 NotificationManager.IMPORTANCE_LOW,
             ).apply {
-                description = "保持群聊连接"
+                description = "保持频道连接"
             }
             manager.createNotificationChannels(listOf(messages, background))
         }
@@ -50,7 +50,7 @@ object NotificationHelper {
         NotificationCompat.Builder(context, CHANNEL_BACKGROUND)
             .setSmallIcon(R.drawable.ic_stat_asa)
             .setContentTitle("ASA 正在保持连接")
-            .setContentText("群聊在后台运行，点击返回")
+            .setContentText("频道在后台运行，点击返回")
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_LOW)

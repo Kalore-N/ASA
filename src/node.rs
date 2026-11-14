@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write as _;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender as StdSender;
 use std::sync::{Arc, RwLock};
@@ -71,6 +71,22 @@ pub struct NodeConfig {
     pub relays: Vec<String>,
 }
 
+/// 本机所有网卡的 IP；用于识别指向自身的拨号。
+fn local_ip_addrs() -> Vec<IpAddr> {
+    if_addrs::get_if_addrs()
+        .map(|list| list.into_iter().map(|item| item.ip()).collect())
+        .unwrap_or_default()
+}
+
+/// 是否指向本机监听端口（避免拨号自身导致“拒绝连接到自身”）。
+fn is_self_target(own: SocketAddr, local: &[IpAddr], addr: SocketAddr) -> bool {
+    addr.port() == own.port()
+        && (addr.ip() == own.ip()
+            || addr.ip().is_loopback()
+            || addr.ip().is_unspecified()
+            || local.contains(&addr.ip()))
+}
+
 #[derive(Debug)]
 pub enum Cmd {
     Chat {
@@ -78,7 +94,7 @@ pub enum Cmd {
         reply: Option<ReplyRef>,
     },
     SetNick(String),
-    /// 修改本机显示的群名称（不广播）。
+    /// 修改本机显示的频道名称（不广播）。
     SetRoomName(String),
     /// 连接 `ip:port` 或 `host:port`。
     Connect(String),
@@ -166,7 +182,7 @@ pub enum NodeEvent {
         ok: bool,
         msg: String,
     },
-    /// 本机群名称变更。
+    /// 本机频道名称变更。
     RoomName(String),
     Info(String),
     Shutdown,
@@ -324,10 +340,12 @@ impl Node {
         // 邀请码同时携带全局配置里的中继地址。
         room.relays = cfg.relays.clone();
         let invite = room.invite(Some(advertise));
+        let self_ips = local_ip_addrs();
         let mut bootstrap = cfg.bootstrap.clone();
+        bootstrap.retain(|addr| !is_self_target(advertise, &self_ips, *addr));
         for entry in &room.entries {
             if let Ok(addr) = crate::room::resolve_addr(entry) {
-                if !bootstrap.contains(&addr) {
+                if !is_self_target(advertise, &self_ips, addr) && !bootstrap.contains(&addr) {
                     bootstrap.push(addr);
                 }
             }
@@ -366,6 +384,7 @@ impl Node {
             discovery,
             relay_tx,
             relay_tried: HashMap::new(),
+            self_ips,
         };
 
         let handle = NodeHandle {
@@ -420,6 +439,7 @@ struct NodeState {
     discovery: Option<Discovery>,
     relay_tx: Vec<mpsc::Sender<RelayCmd>>,
     relay_tried: HashMap<String, Instant>,
+    self_ips: Vec<IpAddr>,
 }
 
 impl NodeState {
@@ -430,7 +450,7 @@ impl NodeState {
         disc_rx: Option<std::sync::mpsc::Receiver<Discovered>>,
     ) {
         self.info(format!(
-            "已监听 {} · 群 {} · 你是 {} ({})",
+            "已监听 {} · 频道 {} · 你是 {} ({})",
             self.ctx.listen,
             self.ctx.room,
             self.nick(),
@@ -441,9 +461,9 @@ impl NodeState {
         // 不应向用户宣称自己是服主（通常紧接着会收到真正的成员表）。
         let lone_non_creator = self.creator != self.ctx.pubkey && self.peers.is_empty();
         if self.is_host() && !lone_non_creator {
-            self.system("群聊已就绪。你是当前服主，把 /invite 得到的邀请码发给朋友即可加群。");
+            self.system("频道已就绪。你是当前服主，把 /invite 得到的邀请码发给朋友即可加入频道。");
         } else {
-            self.system("群聊已就绪。");
+            self.system("频道已就绪。");
         }
         self.emit_members();
         for addr in self.bootstrap.clone() {
@@ -517,6 +537,10 @@ impl NodeState {
             Cmd::SetRoomName(name) => self.set_room_name(name),
             Cmd::Connect(text) => self.connect_text(&text),
             Cmd::DialAddr(addr) => {
+                if is_self_target(self.ctx.listen, &self.self_ips, addr) {
+                    self.info(format!("跳过本机地址: {addr}"));
+                    return true;
+                }
                 if !self.bootstrap.contains(&addr) {
                     self.bootstrap.push(addr);
                 }
@@ -627,7 +651,7 @@ impl NodeState {
             crate::config::GroupProfile::load(&self.dirs, &self.ctx.room).unwrap_or_default();
         profile.nick = Some(nick.clone());
         if let Err(err) = profile.save(&self.dirs, &self.ctx.room) {
-            self.info(format!("群昵称保存失败: {err}"));
+            self.info(format!("频道昵称保存失败: {err}"));
         }
         if let Some(discovery) = &self.discovery {
             discovery.refresh();
@@ -643,18 +667,18 @@ impl NodeState {
     fn set_room_name(&mut self, name: String) {
         let name: String = util::sanitize_text(&name).chars().take(40).collect();
         if name.is_empty() {
-            self.info("群名称不能为空");
+            self.info("频道名称不能为空");
             return;
         }
         let mut profile =
             crate::config::GroupProfile::load(&self.dirs, &self.ctx.room).unwrap_or_default();
         profile.name = Some(name.clone());
         if let Err(err) = profile.save(&self.dirs, &self.ctx.room) {
-            self.info(format!("群名称保存失败: {err}"));
+            self.info(format!("频道名称保存失败: {err}"));
             return;
         }
         let _ = self.ev.send(NodeEvent::RoomName(name.clone()));
-        self.info(format!("群名称已改为 {name}（仅本机显示）"));
+        self.info(format!("频道名称已改为 {name}（仅本机显示）"));
     }
 
     fn nick(&self) -> String {
@@ -1339,7 +1363,11 @@ impl NodeState {
     }
 
     fn dial(&mut self, addr: SocketAddr) {
-        if addr.port() == 0 || addr.ip().is_unspecified() || addr == self.ctx.listen {
+        if addr.port() == 0
+            || addr.ip().is_unspecified()
+            || addr == self.ctx.listen
+            || is_self_target(self.ctx.listen, &self.self_ips, addr)
+        {
             return;
         }
         if self
@@ -2002,5 +2030,37 @@ mod mention_tests {
         assert!(got.contains(&"pk-alice".to_string()));
         let all_only = parse_mentions_in("@所有人 @所有人", &members());
         assert_eq!(all_only.len(), 4);
+    }
+
+    #[cfg(test)]
+    mod self_target_tests {
+        use super::*;
+
+        #[test]
+        fn detects_local_interfaces_and_loopback() {
+            let own: SocketAddr = "192.168.1.10:7777".parse().unwrap();
+            let local: Vec<IpAddr> = vec!["192.168.1.10".parse().unwrap()];
+            assert!(is_self_target(
+                own,
+                &local,
+                "192.168.1.10:7777".parse().unwrap()
+            ));
+            assert!(is_self_target(
+                own,
+                &local,
+                "127.0.0.1:7777".parse().unwrap()
+            ));
+            assert!(is_self_target(own, &local, "0.0.0.0:7777".parse().unwrap()));
+            assert!(!is_self_target(
+                own,
+                &local,
+                "192.168.1.11:7777".parse().unwrap()
+            ));
+            assert!(!is_self_target(
+                own,
+                &local,
+                "192.168.1.10:7778".parse().unwrap()
+            ));
+        }
     }
 }

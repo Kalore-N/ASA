@@ -16,14 +16,14 @@ use asa::tui::{self, UiConfig};
 use asa::{identity::Identity, util};
 
 const USAGE: &str = "\
-ASA · 去中心化 TUI 群聊
+ASA · 去中心化 TUI 频道
 
 用法:
-  asa init [--name 昵称] [--port 7777]     创建本地身份与群，打印邀请码
-  asa join <邀请码> [--name 昵称]          用邀请码加入群
+  asa init [--name 昵称] [--port 7777]     创建本地身份与频道，打印邀请码
+  asa join <邀请码> [--name 昵称]          用邀请码加入频道
   asa chat [选项]                          启动聊天（默认命令）
-  asa groups                               列出本地保存的群
-  asa invite [--port 7777]                 打印当前群的邀请码
+  asa groups                               列出本地保存的频道
+  asa invite [--port 7777]                 打印当前频道的邀请码
   asa entry add|remove <地址>              维护群入口地址
   asa entry list                           列出入口地址与长期邀请码
   asa relay serve [端口] [状态文件]        启动跨网中继（需公网主机）
@@ -41,7 +41,7 @@ ASA · 去中心化 TUI 群聊
   --data-dir <路径>    数据目录，默认 ~/Documents/ASA
   --max-file-mb <MB>   单文件上限，默认 100，0 表示不限制
   --auto-accept        自动接受所有文件请求（有风险，慎用）
-  --room <群ID>        指定要进入的本地群（默认最近使用）
+  --room <群ID>        指定要进入的本地频道（默认最近使用）
 
 进入聊天后输入 /help 查看命令。
 ";
@@ -292,7 +292,7 @@ fn real_main() -> Result<()> {
             let room = RoomConfig::load(PathBuf::from(path).as_path())?
                 .ok_or_else(|| anyhow!("群文件不存在或格式不正确: {path}"))?;
             asa::rooms::save(&dirs, &room)?;
-            println!("已导入群 {}（{}）", room.short_id(), room.id);
+            println!("已导入频道 {}（{}）", room.short_id(), room.id);
             println!("入口数量: {}", room.entries.len());
             println!("运行 asa 启动聊天。");
             Ok(())
@@ -346,7 +346,7 @@ fn real_main() -> Result<()> {
         "groups" => {
             let groups = asa::rooms::list(&dirs)?;
             if groups.is_empty() {
-                println!("还没有保存的群。先用 asa init 或 asa join 加入。");
+                println!("还没有保存的频道。先用 asa init 或 asa join 加入。");
             } else {
                 for group in groups {
                     println!(
@@ -377,9 +377,9 @@ fn real_main() -> Result<()> {
 
 fn load_room(dirs: &RuntimeDirs, opts: &Opts) -> Result<RoomConfig> {
     match opts.room.as_deref() {
-        Some(id) => asa::rooms::load(dirs, id)?.ok_or_else(|| anyhow!("找不到本地群: {id}")),
+        Some(id) => asa::rooms::load(dirs, id)?.ok_or_else(|| anyhow!("找不到本地频道: {id}")),
         None => asa::rooms::active(dirs)?
-            .ok_or_else(|| anyhow!("还没有群。先用 asa init 创建，或 asa join 加入")),
+            .ok_or_else(|| anyhow!("还没有频道。先用 asa init 创建，或 asa join 加入")),
     }
 }
 

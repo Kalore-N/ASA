@@ -1,5 +1,6 @@
 //! TUI 界面：聊天区、成员区、传输区、输入行。
 
+use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -27,9 +28,9 @@ use crate::util;
 const HELP: &str = "\
 命令列表：
 /help                 显示这份帮助
-/name <昵称>          修改昵称（会通知群里）
-/rename <名称>        修改本机显示的群名称（仅本地）
-/invite               显示邀请码，发给朋友加群
+/name <昵称>          修改昵称（会通知频道）
+/rename <名称>        修改本机显示的频道名称（仅本地）
+/invite               显示邀请码，发给朋友加入频道
 /peers                查看在线成员
 /connect <ip:port>    手动连接一个成员（跨网时用）
 /send <成员1,成员2|@all> <路径>  发送文件给多个成员；/send 空参进入成员多选
@@ -37,7 +38,8 @@ const HELP: &str = "\
 /deny <编号>          拒绝收到的文件
 /files                查看进行中的传输
 /reply [编号]         回复指定消息；/reply 列出可回复的编号
-/copy                 把最近的邀请码或保存路径放入输入行（也可 Ctrl+Y）
+/copy                 把最近的邀请码或保存路径复制到系统剪贴板（OSC 52）
+Ctrl+Y                把最近内容放入输入行（剪贴板不可用时的兜底）
 /clear                清空当前屏幕（不影响本地日志）
 /quit                 退出
 回复：Ctrl+R 进入选择，↑/↓ 选择消息，Enter 确认，Esc 取消。
@@ -380,7 +382,7 @@ impl App {
                 self.completion = None;
             }
             KeyCode::Char('r') if ctrl => self.start_reply_select(),
-            KeyCode::Char('y') if ctrl => self.copy_last(),
+            KeyCode::Char('y') if ctrl => self.copy_to_input(),
             KeyCode::Enter => self.submit(),
             KeyCode::Backspace => {
                 self.completion = None;
@@ -534,7 +536,7 @@ impl App {
         }
     }
 
-    fn copy_last(&mut self) {
+    fn copy_to_input(&mut self) {
         if let Some(text) = self.last_copy.clone() {
             self.input = text;
             self.cursor = self.input.chars().count();
@@ -542,6 +544,30 @@ impl App {
             self.set_status("已放入输入行，可直接复制", false);
         } else {
             self.set_status("暂无可复制内容", true);
+        }
+    }
+
+    fn copy_to_clipboard(&mut self) {
+        let Some(text) = self.last_copy.clone() else {
+            self.set_status("暂无可复制内容", true);
+            return;
+        };
+        // OSC 52：让终端把文本写入系统剪贴板；不支持的终端可以继续用 Ctrl+Y 放入输入行。
+        let encoded = crate::crypto::b64e(text.as_bytes());
+        let sequence = format!("\x1b]52;c;{encoded}\x07");
+        let mut stdout = std::io::stdout();
+        match stdout
+            .write_all(sequence.as_bytes())
+            .and_then(|_| stdout.flush())
+        {
+            Ok(()) => self.set_status(
+                "已尝试复制到系统剪贴板；若终端不支持 OSC 52，按 Ctrl+Y 放入输入行",
+                false,
+            ),
+            Err(err) => self.set_status(
+                format!("复制到剪贴板失败: {err}；按 Ctrl+Y 放入输入行"),
+                true,
+            ),
         }
     }
 
@@ -889,15 +915,15 @@ impl App {
                     let current = self
                         .room_name
                         .clone()
-                        .unwrap_or_else(|| format!("群 {}", self.room_id));
+                        .unwrap_or_else(|| format!("频道 {}", self.room_id));
                     self.set_status(
-                        format!("当前群名称: {current}（用法 /rename <名称>）"),
+                        format!("当前频道名称: {current}（用法 /rename <名称>）"),
                         false,
                     );
                 } else {
                     let name: String = util::sanitize_text(&rest).chars().take(40).collect();
                     if name.is_empty() {
-                        self.set_status("群名称不能为空", true);
+                        self.set_status("频道名称不能为空", true);
                         return;
                     }
                     let mut profile =
@@ -906,9 +932,9 @@ impl App {
                     match profile.save_at(&self.group_path) {
                         Ok(()) => {
                             self.room_name = Some(name.clone());
-                            self.set_status(format!("群名称已改为 {name}（仅本机显示）"), false);
+                            self.set_status(format!("频道名称已改为 {name}（仅本机显示）"), false);
                         }
-                        Err(err) => self.set_status(format!("保存群名称失败: {err}"), true),
+                        Err(err) => self.set_status(format!("保存频道名称失败: {err}"), true),
                     }
                 }
             }
@@ -990,7 +1016,7 @@ impl App {
                     path: path.into(),
                 });
             }
-            "copy" => self.copy_last(),
+            "copy" => self.copy_to_clipboard(),
             "accept" => self.resolve_offer(&rest, true),
             "deny" | "reject" => self.resolve_offer(&rest, false),
             "files" => {
@@ -1110,6 +1136,7 @@ impl App {
         }
         self.draw_input(frame, chunks[idx]);
         self.draw_footer(frame, chunks[idx + 1]);
+        self.draw_completion_popup(frame, chunks[idx]);
     }
 
     fn draw_header(&self, frame: &mut Frame, area: Rect) {
@@ -1133,7 +1160,7 @@ impl App {
                     .bg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" 群聊 ", Style::default().fg(Color::Cyan)),
+            Span::styled(" 频道 ", Style::default().fg(Color::Cyan)),
             Span::styled(
                 format!(
                     "{} ",
@@ -1535,6 +1562,65 @@ impl App {
         );
     }
 
+    /// Helix 风格补全弹窗：显示在输入行上方，选中项高亮。
+    fn draw_completion_popup(&self, frame: &mut Frame, input_area: Rect) {
+        let Some(state) = &self.completion else {
+            return;
+        };
+        if state.candidates.is_empty() {
+            return;
+        }
+        let max_width = state
+            .candidates
+            .iter()
+            .map(|item| UnicodeWidthStr::width(item.as_str()))
+            .max()
+            .unwrap_or(12)
+            .min(52) as u16;
+        let width = (max_width + 4)
+            .max(24)
+            .min(frame.area().width.saturating_sub(4));
+        let visible = state.candidates.len().min(9) as u16;
+        let height = visible + 2;
+        let x = input_area.x.saturating_add(2);
+        let y = input_area.y.saturating_sub(height);
+        if width < 12 || input_area.y < height {
+            return;
+        }
+        let rect = Rect::new(x, y, width, height);
+        frame.render_widget(Clear, rect);
+
+        let visible_count = visible as usize;
+        let start = if state.index >= visible_count {
+            state.index + 1 - visible_count
+        } else {
+            0
+        };
+        let items: Vec<ListItem> = state
+            .candidates
+            .iter()
+            .skip(start)
+            .take(visible_count)
+            .map(|candidate| {
+                ListItem::new(Line::from(Span::styled(
+                    candidate.clone(),
+                    Style::default().fg(Color::White),
+                )))
+            })
+            .collect();
+        let mut list_state =
+            ListState::default().with_selected(Some(state.index.saturating_sub(start)));
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Yellow))
+            .title(Line::from(Span::styled(
+                format!(" 补全 {}/{} ", state.index + 1, state.candidates.len()),
+                Style::default().fg(Color::Yellow),
+            )));
+        frame.render_stateful_widget(List::new(items).block(block), rect, &mut list_state);
+    }
+
     fn draw_input(&self, frame: &mut Frame, area: Rect) {
         let (visible, cursor_x) = self.input_view(area.width.saturating_sub(2) as usize);
         let mut spans = vec![Span::styled(
@@ -1556,35 +1642,6 @@ impl App {
     }
 
     fn draw_footer(&self, frame: &mut Frame, area: Rect) {
-        if let Some(state) = &self.completion {
-            if !state.candidates.is_empty() {
-                let mut spans = vec![Span::styled(
-                    "Tab 补全:  ",
-                    Style::default().fg(Color::DarkGray),
-                )];
-                let start = state.index.saturating_sub(3);
-                let end = (start + 9).min(state.candidates.len());
-                for (offset, candidate) in state.candidates[start..end].iter().enumerate() {
-                    let idx = start + offset;
-                    let style = if idx == state.index {
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::DarkGray)
-                    };
-                    spans.push(Span::styled(format!("{candidate}  "), style));
-                }
-                if end < state.candidates.len() {
-                    spans.push(Span::styled(
-                        format!("… ({}/{})", state.index + 1, state.candidates.len()),
-                        Style::default().fg(Color::DarkGray),
-                    ));
-                }
-                frame.render_widget(Paragraph::new(Line::from(spans)), area);
-                return;
-            }
-        }
         let mut spans = vec![Span::styled(HINTS, Style::default().fg(Color::DarkGray))];
         if self.scroll > 0 {
             spans.push(Span::styled(
@@ -1756,7 +1813,7 @@ fn path_candidates(token: &str) -> Vec<String> {
         if name.starts_with('.') && !prefix.starts_with('.') {
             continue;
         }
-        if !name.starts_with(&prefix) {
+        if !name.to_lowercase().starts_with(&prefix.to_lowercase()) {
             continue;
         }
         let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
@@ -2111,7 +2168,7 @@ mod tests {
     fn copy_last_puts_content_into_input() {
         let mut app = test_app();
         app.last_copy = Some("asa://example".to_string());
-        app.copy_last();
+        app.copy_to_input();
         assert_eq!(app.input, "asa://example");
         assert_eq!(app.cursor, app.input.chars().count());
     }
@@ -2161,5 +2218,17 @@ mod tests {
         assert!(app.input.contains("alice"));
         assert!(app.input.contains("bob"));
         assert!(app.file_select.is_none());
+    }
+
+    #[test]
+    fn path_candidates_are_case_insensitive() {
+        let dir = std::env::temp_dir().join(format!("asa-path-case-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Alpha.TXT"), b"x").unwrap();
+        let prefix = format!("{}/alpha", dir.display());
+        let values = path_candidates(&prefix);
+        assert!(values.iter().any(|value| value.ends_with("Alpha.TXT")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

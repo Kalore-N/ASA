@@ -108,7 +108,7 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
             let text = cfg
                 .invite
                 .as_deref()
-                .ok_or_else(|| anyhow!("加入群需要邀请码"))?;
+                .ok_or_else(|| anyhow!("加入频道需要邀请码"))?;
             let (parsed, addresses) = RoomConfig::parse_invite_full(text)?;
             invite_addresses = addresses;
             let room = match crate::rooms::load(&dirs, &parsed.id)? {
@@ -135,10 +135,10 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
         }
         "chat" => match cfg.room_id.as_deref() {
             Some(id) => {
-                crate::rooms::load(&dirs, id)?.ok_or_else(|| anyhow!("找不到本地群: {id}"))?
+                crate::rooms::load(&dirs, id)?.ok_or_else(|| anyhow!("找不到本地频道: {id}"))?
             }
             None => {
-                crate::rooms::active(&dirs)?.ok_or_else(|| anyhow!("还没有群，请先创建或加入"))?
+                crate::rooms::active(&dirs)?.ok_or_else(|| anyhow!("还没有频道，请先创建或加入"))?
             }
         },
         other => return Err(anyhow!("未知模式: {other}")),
@@ -539,7 +539,7 @@ pub extern "system" fn Java_com_asa_chat_NativeBridge_renameGroup<'local>(
         let name = read_string(&mut env, &name)?;
         let name: String = crate::util::sanitize_text(&name).chars().take(40).collect();
         if name.is_empty() {
-            return Err(anyhow!("群名称不能为空"));
+            return Err(anyhow!("频道名称不能为空"));
         }
         let dirs = RuntimeDirs::ensure(&root)?;
         let mut profile = GroupProfile::load(&dirs, &room_id)?;

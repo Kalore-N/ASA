@@ -190,12 +190,12 @@ fun SettingsScreen(
             )
 
             Text(
-                "提示：下载目录、大小上限、mDNS、中继在下次进入群聊时生效；主题和字号立即生效。",
+                "提示：下载目录、大小上限、mDNS、中继在下次进入频道时生效；主题和字号立即生效。",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                "群内昵称可在聊天页菜单的「修改昵称」中设置，会单独保存在当前群。",
+                "频道内昵称可在聊天页菜单的「修改昵称」中设置，会单独保存在当前频道。",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

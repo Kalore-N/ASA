@@ -164,7 +164,7 @@ pub fn list(dirs: &RuntimeDirs) -> Result<Vec<SavedGroup>> {
             let name = profile
                 .name
                 .filter(|name| !name.trim().is_empty())
-                .unwrap_or_else(|| format!("群 {}", room.short_id()));
+                .unwrap_or_else(|| format!("频道 {}", room.short_id()));
             groups.push(SavedGroup {
                 id: room.id.clone(),
                 name,

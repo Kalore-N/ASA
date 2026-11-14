@@ -71,7 +71,7 @@ fun GroupListScreen(
                     containerColor = MaterialTheme.colorScheme.surface,
                     titleContentColor = MaterialTheme.colorScheme.onSurface,
                 ),
-                title = { Text("选择群聊", fontWeight = FontWeight.SemiBold) },
+                title = { Text("选择频道", fontWeight = FontWeight.SemiBold) },
                 actions = {
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Filled.Settings, contentDescription = "设置")
@@ -89,7 +89,7 @@ fun GroupListScreen(
         ) {
             if (state.groups.isEmpty()) {
                 Text(
-                    "还没有保存的群聊。",
+                    "还没有保存的频道。",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 14.sp,
                 )
@@ -122,14 +122,14 @@ fun GroupListScreen(
                         .weight(1f)
                         .height(44.dp),
                     shape = FieldShape,
-                ) { Text("创建群聊") }
+                ) { Text("创建频道") }
                 OutlinedButton(
                     onClick = onJoin,
                     modifier = Modifier
                         .weight(1f)
                         .height(44.dp),
                     shape = FieldShape,
-                ) { Text("加入群聊") }
+                ) { Text("加入频道") }
             }
         }
     }
@@ -139,7 +139,7 @@ fun GroupListScreen(
         AlertDialog(
             onDismissRequest = { renameTarget = null },
             shape = ItemShape,
-            title = { Text("群聊名称（仅本机）") },
+            title = { Text("频道名称（仅本机）") },
             text = {
                 OutlinedTextField(
                     value = name,
@@ -189,9 +189,9 @@ private fun GroupRow(group: SavedGroup, onEnter: () -> Unit, onRename: () -> Uni
                 )
                 Text(
                     buildString {
-                        append("群 ")
+                        append("频道 ")
                         append(group.id.take(8))
-                        if (group.active) append(" · 当前群")
+                        if (group.active) append(" · 当前频道")
                         if (group.lastUsed > 0) {
                             append(" · ")
                             append(
