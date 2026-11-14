@@ -30,6 +30,8 @@ pub struct Config {
     pub ui: UiPrefs,
     #[serde(default)]
     pub network: NetworkPrefs,
+    #[serde(default)]
+    pub sync: SyncPrefs,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -42,6 +44,33 @@ pub struct UiPrefs {
     pub font_size: u16,
     #[serde(default)]
     pub compact: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SyncPrefs {
+    /// 加入频道后自动向在线成员拉取最近消息。
+    #[serde(default = "default_sync_enabled")]
+    pub enabled: bool,
+    /// 每次请求的最大消息条数。
+    #[serde(default = "default_sync_count")]
+    pub count: u32,
+}
+
+impl Default for SyncPrefs {
+    fn default() -> Self {
+        Self {
+            enabled: default_sync_enabled(),
+            count: default_sync_count(),
+        }
+    }
+}
+
+fn default_sync_enabled() -> bool {
+    true
+}
+
+fn default_sync_count() -> u32 {
+    50
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -65,6 +94,7 @@ impl Default for Config {
             auto_accept: false,
             ui: UiPrefs::default(),
             network: NetworkPrefs::default(),
+            sync: SyncPrefs::default(),
         }
     }
 }
@@ -269,6 +299,8 @@ mod tests {
         assert!(config.network.relays.is_empty());
         assert_eq!(config.ui.theme, "dark");
         assert_eq!(config.ui.font_size, 15);
+        assert!(config.sync.enabled);
+        assert_eq!(config.sync.count, 50);
     }
 
     #[test]

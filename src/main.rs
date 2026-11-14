@@ -12,7 +12,7 @@ use asa::node::{Node, NodeConfig};
 use asa::paths::{self, RuntimeDirs};
 use asa::room::{self, RoomConfig};
 use asa::settings::Settings;
-use asa::tui::{self, UiConfig};
+use asa::tui::{self, TuiAction, UiConfig};
 use asa::{identity::Identity, util};
 
 const USAGE: &str = "\
@@ -360,7 +360,6 @@ fn real_main() -> Result<()> {
             Ok(())
         }
         "chat" => {
-            let room = load_room(&dirs, &opts)?;
             let (identity, saved_nick) = Identity::load_or_create(&dirs.identity_path())?;
             let nick = opts
                 .name
@@ -368,6 +367,14 @@ fn real_main() -> Result<()> {
                 .or(saved_nick)
                 .unwrap_or_else(|| default_nick(&identity));
             identity.save(&dirs.identity_path(), &nick)?;
+            let room = if let Some(id) = opts.room.as_deref() {
+                asa::rooms::load(&dirs, id)?.ok_or_else(|| anyhow!("找不到本地频道: {id}"))?
+            } else {
+                match tui::lobby(dirs.clone(), identity.clone(), nick.clone())? {
+                    Some(room) => room,
+                    None => return Ok(()),
+                }
+            };
             let bootstrap = resolve_all(&opts.connect);
             run_chat(dirs, identity, nick, room, &opts, &config, bootstrap)
         }
@@ -400,79 +407,106 @@ fn run_chat(
     config: &Config,
     bootstrap: Vec<SocketAddr>,
 ) -> Result<()> {
-    let mut profile = GroupProfile::load(&dirs, &room.id).unwrap_or_default();
-    let nick = opts.name.clone().or(profile.nick.clone()).unwrap_or(nick);
-    if profile.nick.as_deref() != Some(nick.as_str()) {
-        profile.nick = Some(nick.clone());
-        let _ = profile.save(&dirs, &room.id);
-    }
-    let downloads = profile.download_dir(config, &dirs);
-    let max_file = opts
-        .max_file_mb
-        .map(|mb| {
-            if mb == 0 {
-                u64::MAX
-            } else {
-                mb.saturating_mul(1024 * 1024)
+    let base_nick = nick;
+    let mut room = room;
+    let mut bootstrap = bootstrap;
+    loop {
+        let mut profile = GroupProfile::load(&dirs, &room.id).unwrap_or_default();
+        let nick = opts
+            .name
+            .clone()
+            .or(profile.nick.clone())
+            .unwrap_or_else(|| base_nick.clone());
+        if profile.nick.as_deref() != Some(nick.as_str()) {
+            profile.nick = Some(nick.clone());
+            let _ = profile.save(&dirs, &room.id);
+        }
+        let downloads = profile.download_dir(config, &dirs);
+        let max_file = opts
+            .max_file_mb
+            .map(|mb| {
+                if mb == 0 {
+                    u64::MAX
+                } else {
+                    mb.saturating_mul(1024 * 1024)
+                }
+            })
+            .unwrap_or_else(|| profile.max_file(config));
+        let auto_accept = opts.auto_accept || profile.auto_accept(config);
+        let mut relays = config.network.relays.clone();
+        for relay in &room.relays {
+            if !relays.iter().any(|item| item == relay) {
+                relays.push(relay.clone());
             }
-        })
-        .unwrap_or_else(|| profile.max_file(config));
-    let auto_accept = opts.auto_accept || profile.auto_accept(config);
-    let mut relays = config.network.relays.clone();
-    for relay in &room.relays {
-        if !relays.iter().any(|item| item == relay) {
-            relays.push(relay.clone());
+        }
+        let pubkey = identity.pubkey_hex();
+        let self_since = if !room.creator.is_empty() && room.creator == pubkey {
+            room.created_at
+        } else {
+            util::now_ms()
+        };
+        let bind: SocketAddr = format!("0.0.0.0:{}", opts.port())
+            .parse()
+            .context("监听地址无效")?;
+        let advertise = Some(SocketAddr::new(util::lan_ipv4(), opts.port()));
+
+        let cfg = NodeConfig {
+            signing: identity.signing.clone(),
+            pubkey,
+            nick: Arc::new(RwLock::new(nick.clone())),
+            room_id: room.id.clone(),
+            room_key: room.key,
+            room_created: room.created_at,
+            creator: room.creator.clone(),
+            self_since,
+            bind,
+            advertise,
+            dirs: dirs.clone(),
+            identity_path: dirs.identity_path(),
+            downloads,
+            max_file,
+            auto_accept,
+            mdns: !opts.no_mdns,
+            bootstrap: bootstrap.clone(),
+            sync_history: config.sync.enabled,
+            sync_count: config.sync.count,
+            relays,
+        };
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("asa-net")
+            .build()
+            .context("创建异步运行时失败")?;
+        let handle = runtime.block_on(Node::start(cfg))?;
+        let ui = UiConfig {
+            room_id: handle.room_id.clone(),
+            listen: handle.advertise,
+            max_file,
+            room_name: profile.name.clone(),
+            group_path: asa::config::group_path(&dirs, &room.id),
+            groups: asa::rooms::list(&dirs).unwrap_or_default(),
+        };
+        let action = tui::run(handle, ui);
+        runtime.shutdown_timeout(Duration::from_secs(2));
+        match action? {
+            TuiAction::Quit => break,
+            TuiAction::Switch(room_id) => {
+                room = asa::rooms::load(&dirs, &room_id)?
+                    .ok_or_else(|| anyhow!("找不到本地频道: {room_id}"))?;
+                let _ = asa::rooms::set_active(&dirs, &room_id);
+                bootstrap.clear();
+            }
+            TuiAction::Lobby => match tui::lobby(dirs.clone(), identity.clone(), nick)? {
+                Some(next) => {
+                    room = next;
+                    bootstrap.clear();
+                }
+                None => break,
+            },
         }
     }
-    let pubkey = identity.pubkey_hex();
-    let self_since = if !room.creator.is_empty() && room.creator == pubkey {
-        room.created_at
-    } else {
-        util::now_ms()
-    };
-    let bind: SocketAddr = format!("0.0.0.0:{}", opts.port())
-        .parse()
-        .context("监听地址无效")?;
-    let advertise_ip = util::lan_ipv4();
-    let advertise = Some(SocketAddr::new(advertise_ip, opts.port()));
-
-    let cfg = NodeConfig {
-        signing: identity.signing.clone(),
-        pubkey,
-        nick: Arc::new(RwLock::new(nick)),
-        room_id: room.id.clone(),
-        room_key: room.key,
-        room_created: room.created_at,
-        creator: room.creator.clone(),
-        self_since,
-        bind,
-        advertise,
-        dirs: dirs.clone(),
-        identity_path: dirs.identity_path(),
-        downloads,
-        max_file,
-        auto_accept,
-        mdns: !opts.no_mdns,
-        bootstrap,
-        relays,
-    };
-
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .thread_name("asa-net")
-        .build()
-        .context("创建异步运行时失败")?;
-    let handle = runtime.block_on(Node::start(cfg))?;
-    let ui = UiConfig {
-        room_id: handle.room_id.clone(),
-        listen: handle.advertise,
-        max_file,
-        room_name: profile.name.clone(),
-        group_path: asa::config::group_path(&dirs, &room.id),
-    };
-    let result = tui::run(handle, ui);
-    runtime.shutdown_timeout(Duration::from_secs(2));
-    result
+    Ok(())
 }
 
 fn resolve_all(inputs: &[String]) -> Vec<SocketAddr> {

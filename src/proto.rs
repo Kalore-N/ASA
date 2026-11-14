@@ -65,6 +65,20 @@ pub struct ReplyRef {
     pub preview: String,
 }
 
+/// 从其他成员同步过来的聊天记录。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncMessage {
+    pub id: String,
+    pub from: String,
+    pub nick: String,
+    pub text: String,
+    pub ts: u64,
+    #[serde(default)]
+    pub mentions: Vec<String>,
+    #[serde(default)]
+    pub reply: Option<ReplyRef>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "k", rename_all = "snake_case")]
 pub enum Payload {
@@ -76,6 +90,14 @@ pub enum Payload {
         /// 回复引用。
         #[serde(default)]
         reply: Option<ReplyRef>,
+    },
+    /// 请求最近聊天记录。
+    SyncRequest {
+        limit: u32,
+    },
+    /// 回复最近聊天记录。
+    SyncBatch {
+        messages: Vec<SyncMessage>,
     },
     /// 在线心跳，携带昵称/地址/在场时间。
     Presence {
@@ -313,6 +335,30 @@ mod tests {
                 assert!(reply.is_none());
             }
             _ => panic!("载荷类型错误"),
+        }
+    }
+
+    #[test]
+    fn sync_batch_roundtrip() {
+        let payload = Payload::SyncBatch {
+            messages: vec![SyncMessage {
+                id: "id1".to_string(),
+                from: "pk".to_string(),
+                nick: "alice".to_string(),
+                text: "hello".to_string(),
+                ts: 123,
+                mentions: vec![],
+                reply: None,
+            }],
+        };
+        let text = serde_json::to_string(&payload).unwrap();
+        let parsed: Payload = serde_json::from_str(&text).unwrap();
+        match parsed {
+            Payload::SyncBatch { messages } => {
+                assert_eq!(messages.len(), 1);
+                assert_eq!(messages[0].text, "hello");
+            }
+            _ => panic!("类型错误"),
         }
     }
 }

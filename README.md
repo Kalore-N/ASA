@@ -2,7 +2,7 @@
 
 这是我第一次尝试vibe coding的产物，随便写了点小东西玩玩
 
-当前版本：**1.3.1**
+当前版本：**1.4.0**
 
 ASA 是一个用 Rust 编写的**完全去中心化**终端频道工具：没有中心服务器，每个参与者都是对等节点。支持局域网自动发现、跨网手动连接、端到端加密、本地聊天记录（JSONL）以及文件传输。
 
@@ -55,6 +55,20 @@ asa invite     # 打印当前群的邀请码
 
 直接输入文字回车即发送。输入 `/help` 查看全部命令。
 
+## TUI 启动与频道切换
+
+运行 `asa` 或 `asa chat` 时会先显示不透明的频道选择框，必须选择一个频道后才能进入聊天：
+
+- `↑`/`↓` 选择已保存频道，`Enter` 进入
+- `c` 创建新频道
+- `j` 粘贴邀请码加入频道
+- `r` 修改本机显示的频道名称
+- `d` 删除本机保存的频道（不会删除聊天日志和下载文件）
+- `q`/`Esc` 退出
+
+进入频道后可用 `/channels` 再次打开选择框，或用 `/switch <名称或 ID>` 直接切换。
+切换频道会重启网络节点，但不会删除任何本地文件。
+
 ## TUI 操作
 
 | 按键 | 作用 |
@@ -77,8 +91,8 @@ asa invite     # 打印当前群的邀请码
 | 命令 | 作用 |
 | --- | --- |
 | `/help` | 显示帮助 |
-| `/name <昵称>` | 修改昵称并通知群内 |
-| `/rename <名称>` | 修改本机显示的群名称（仅本地） |
+| `/name <昵称>` | 修改昵称并通知频道内 |
+| `/rename <名称>` | 修改本机显示的频道名称（仅本地） |
 | `/invite` | 显示邀请码 |
 | `/peers` | 查看在线成员 |
 | `/connect <ip:port>` | 手动连接成员 |
@@ -86,6 +100,9 @@ asa invite     # 打印当前群的邀请码
 | `/copy` | 把最近的邀请码/保存路径复制到系统剪贴板（OSC 52） |
 | `/accept <编号>` / `/deny <编号>` | 接受/拒绝收到的文件 |
 | `/files` | 查看进行中的传输 |
+| `/sync` | 向在线成员请求最近聊天记录（默认也会自动同步） |
+| `/channels` | 打开频道选择框 |
+| `/switch <名称或 ID>` | 切换到指定频道 |
 | `/reply [编号]` | 回复指定消息；不带编号时列出最近消息的编号 |
 | `/clear` | 清空当前屏幕 |
 | `/quit` | 退出 |
@@ -129,7 +146,8 @@ asa import <文件>               导入群文件
   "max_file_mb": 100,
   "auto_accept": false,
   "ui": { "theme": "dark", "font_size": 15, "compact": false },
-  "network": { "port": null, "mdns": true, "relays": [] }
+  "network": { "port": null, "mdns": true, "relays": [] },
+  "sync": { "enabled": true, "count": 50 }
 }
 ```
 
@@ -139,12 +157,14 @@ asa import <文件>               导入群文件
 - `ui.font_size`：Android 字号；TUI 的终端字体由终端模拟器决定，程序无法可靠修改。
 - `network.mdns`：局域网自动发现，默认开启，因此局域网开箱即用。
 - `network.relays`：跨网中继地址，默认空；部署中继后执行 `asa relay add` 写入。
+- `sync.enabled`：加入频道后自动向在线成员拉取最近聊天记录，默认开启。
+- `sync.count`：每次请求的最大条数，默认 50，最高 200。同步内容会写入本地 JSONL 日志，并按原时间插入界面；可用 `/sync` 手动再拉取一次。
 
-群配置在 `runtime/data/groups/<群 ID>.json`，`null` 表示继承全局：
+群配置在 `runtime/data/groups/<频道 ID>.json`，`null` 表示继承全局：
 
 ```json
 {
-  "name": "我的群",
+  "name": "我的频道",
   "nick": "alice",
   "download_dir": null,
   "max_file_mb": null,
@@ -153,8 +173,8 @@ asa import <文件>               导入群文件
 }
 ```
 
-- `name`：本机显示的群名称，只在本地生效，不会广播给其他成员。
-- `nick`：当前群内昵称；聊天页 `/name` 会同时更新它。
+- `name`：本机显示的频道名称，只在本地生效，不会广播给其他成员。
+- `nick`：当前频道内昵称；聊天页 `/name` 会同时更新它。
 - `download_dir` / `max_file_mb` / `auto_accept`：按群覆盖全局。
 - `notify_mentions`：是否提示 @ 提及。
 
@@ -272,7 +292,7 @@ deploy/         中继的 Docker / systemd / Fly.io 部署文件
 
 - 消息与文件均使用群密钥加密，身份用 ed25519 签名。
 - 邀请码包含群密钥，请只通过可信渠道分享。
-- **不做历史同步**：新成员只能看到加入之后的消息；本地记录仅保存在各自机器上。
+- **历史同步范围有限**：默认向在线成员拉取最近 50 条，不能补全完整历史或离线成员的内容。
 - 跨网推荐使用内置中继；中继只转发加密后的字节流，但仍能看到群 ID、连接时间和流量大小。
 - 中继默认无状态，不保存群成员表；群固定依赖本地群文件/邀请码，任何可用中继都能参与发现。
 - 可配置多个中继，客户端会同时连接；单个中继故障时其他中继仍可用。
@@ -285,24 +305,24 @@ GitHub Releases 提供各平台的可运行产物；源码仓库不包含构建�
 
 | 平台 | 文件 | 说明 |
 | --- | --- | --- |
-| Linux x86-64 | `asa-1.3.1-linux-x86_64` | musl 静态单文件，无 glibc 依赖 |
-| Windows x86-64 | `asa-1.3.1-windows-x86_64.exe` | MSVC 构建，控制台程序 |
-| Android arm64 / x86_64 | `asa-1.3.1-android.apk` | Kotlin + Compose 图形界面，可直接安装 |
-| Arch Linux x86-64 | `asa-1.3.1-1-x86_64.pkg.tar.zst` | 含二进制、man、桌面入口与图标 |
-| Debian / Ubuntu amd64 | `asa_1.3.1_amd64.deb` | 含二进制、man、桌面入口与图标 |
-| Fedora / RHEL x86-64 | `asa-1.3.1-1.x86_64.rpm` | 含二进制、man、桌面入口与图标 |
+| Linux x86-64 | `asa-1.4.0-linux-x86_64` | musl 静态单文件，无 glibc 依赖 |
+| Windows x86-64 | `asa-1.4.0-windows-x86_64.exe` | MSVC 构建，控制台程序 |
+| Android arm64 / x86_64 | `asa-1.4.0-android.apk` | Kotlin + Compose 图形界面，可直接安装 |
+| Arch Linux x86-64 | `asa-1.4.0-1-x86_64.pkg.tar.zst` | 含二进制、man、桌面入口与图标 |
+| Debian / Ubuntu amd64 | `asa_1.4.0_amd64.deb` | 含二进制、man、桌面入口与图标 |
+| Fedora / RHEL x86-64 | `asa-1.4.0-1.x86_64.rpm` | 含二进制、man、桌面入口与图标 |
 
 ### Linux 发行版包
 
 ```bash
 # Arch
-sudo pacman -U asa-1.3.1-1-x86_64.pkg.tar.zst
+sudo pacman -U asa-1.4.0-1-x86_64.pkg.tar.zst
 
 # Debian / Ubuntu
-sudo apt install ./asa_1.3.1_amd64.deb
+sudo apt install ./asa_1.4.0_amd64.deb
 
 # Fedora / RHEL
-sudo dnf install ./asa-1.3.1-1.x86_64.rpm
+sudo dnf install ./asa-1.4.0-1.x86_64.rpm
 ```
 
 安装后直接运行 `asa`，或从应用菜单打开 ASA。安装包是静态二进制，不依赖系统 Rust 工具链。

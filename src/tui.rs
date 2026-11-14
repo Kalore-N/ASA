@@ -37,6 +37,9 @@ const HELP: &str = "\
 /accept <编号>        接受收到的文件
 /deny <编号>          拒绝收到的文件
 /files                查看进行中的传输
+/sync                 向在线成员请求最近聊天记录
+/channels             打开频道选择框
+/switch <名称|ID>     切换到指定频道
 /reply [编号]         回复指定消息；/reply 列出可回复的编号
 /copy                 把最近的邀请码或保存路径复制到系统剪贴板（OSC 52）
 Ctrl+Y                把最近内容放入输入行（剪贴板不可用时的兜底）
@@ -51,10 +54,34 @@ const HINTS: &str =
     "Enter 发送 · Tab 补全 · Ctrl+R 回复 · PgUp/PgDn 翻页 · /help 命令 · Ctrl+C 退出";
 
 /// 可补全的聊天指令。
-const COMMANDS: [&str; 12] = [
-    "/help", "/name", "/invite", "/peers", "/connect", "/send", "/accept", "/deny", "/files",
-    "/clear", "/reply", "/quit",
+const COMMANDS: [&str; 17] = [
+    "/help",
+    "/name",
+    "/rename",
+    "/invite",
+    "/peers",
+    "/connect",
+    "/send",
+    "/accept",
+    "/deny",
+    "/files",
+    "/sync",
+    "/channels",
+    "/switch",
+    "/copy",
+    "/clear",
+    "/reply",
+    "/quit",
 ];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TuiAction {
+    Quit,
+    /// 切换到指定频道（重启节点）。
+    Switch(String),
+    /// 返回频道选择大厅。
+    Lobby,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -111,6 +138,7 @@ pub struct UiConfig {
     pub max_file: u64,
     pub room_name: Option<String>,
     pub group_path: PathBuf,
+    pub groups: Vec<crate::rooms::SavedGroup>,
 }
 
 pub struct App {
@@ -149,6 +177,8 @@ pub struct App {
     file_select: Option<FileSelect>,
     /// 最近一次可复制内容（邀请码或保存路径）。
     last_copy: Option<String>,
+    groups: Vec<crate::rooms::SavedGroup>,
+    action: Option<TuiAction>,
 }
 
 impl App {
@@ -184,6 +214,8 @@ impl App {
             completion: None,
             file_select: None,
             last_copy: None,
+            groups: cfg.groups,
+            action: None,
         };
         app.push_system("欢迎使用 ASA。直接输入文字回车发送；/help 查看命令；/invite 获取邀请码。");
         app
@@ -202,13 +234,14 @@ impl App {
                 id,
                 mentions,
                 reply,
+                history,
             } => {
                 let _ = from;
                 let mentioned = !mine && mentions.iter().any(|pk| pk == &self.me);
                 if mentioned {
                     self.set_status(format!("{nick} 提到了你"), false);
                 }
-                self.push_message(Message {
+                let message = Message {
                     seq: 0,
                     ts,
                     nick,
@@ -218,7 +251,12 @@ impl App {
                     id,
                     mentions,
                     reply,
-                });
+                };
+                if history {
+                    self.insert_message_sorted(message);
+                } else {
+                    self.push_message(message);
+                }
             }
             NodeEvent::System { text, ts } => {
                 self.push_message(Message {
@@ -323,6 +361,23 @@ impl App {
         message.seq = self.next_seq;
         self.next_seq += 1;
         self.messages.push(message);
+        if self.messages.len() > 5000 {
+            self.messages.drain(..1000);
+        }
+        if self.follow {
+            self.scroll = 0;
+        }
+    }
+
+    fn insert_message_sorted(&mut self, mut message: Message) {
+        message.seq = self.next_seq;
+        self.next_seq += 1;
+        let position = self
+            .messages
+            .iter()
+            .position(|existing| existing.ts > message.ts)
+            .unwrap_or(self.messages.len());
+        self.messages.insert(position, message);
         if self.messages.len() > 5000 {
             self.messages.drain(..1000);
         }
@@ -932,6 +987,11 @@ impl App {
                     match profile.save_at(&self.group_path) {
                         Ok(()) => {
                             self.room_name = Some(name.clone());
+                            for group in &mut self.groups {
+                                if group.id == self.room_id {
+                                    group.name = name.clone();
+                                }
+                            }
                             self.set_status(format!("频道名称已改为 {name}（仅本机显示）"), false);
                         }
                         Err(err) => self.set_status(format!("保存频道名称失败: {err}"), true),
@@ -1017,6 +1077,28 @@ impl App {
                 });
             }
             "copy" => self.copy_to_clipboard(),
+            "sync" => {
+                let _ = self.cmd.send(Cmd::Sync);
+            }
+            "channels" => {
+                self.action = Some(TuiAction::Lobby);
+            }
+            "switch" => {
+                if rest.is_empty() {
+                    self.action = Some(TuiAction::Lobby);
+                } else {
+                    let needle = rest.to_lowercase();
+                    let found = self.groups.iter().find(|group| {
+                        group.id.starts_with(&needle)
+                            || group.name.to_lowercase() == needle
+                            || group.name.to_lowercase().contains(&needle)
+                    });
+                    match found {
+                        Some(group) => self.action = Some(TuiAction::Switch(group.id.clone())),
+                        None => self.set_status(format!("找不到频道: {rest}"), true),
+                    }
+                }
+            }
             "accept" => self.resolve_offer(&rest, true),
             "deny" | "reject" => self.resolve_offer(&rest, false),
             "files" => {
@@ -1684,7 +1766,7 @@ impl App {
 }
 
 /// 启动 TUI 主循环（阻塞当前线程）。
-pub fn run(handle: NodeHandle, cfg: UiConfig) -> Result<()> {
+pub fn run(handle: NodeHandle, cfg: UiConfig) -> Result<TuiAction> {
     install_panic_hook();
     let mut terminal = init_terminal()?;
     let mut app = App::new(&handle, cfg);
@@ -1708,10 +1790,13 @@ pub fn run(handle: NodeHandle, cfg: UiConfig) -> Result<()> {
             }
         }
         terminal.draw(|frame| app.draw(frame))?;
+        if app.action.is_some() {
+            break;
+        }
     }
     restore_terminal(&mut terminal)?;
     let _ = handle.cmd.send(Cmd::Quit);
-    Ok(())
+    Ok(app.action.take().unwrap_or(TuiAction::Quit))
 }
 
 fn init_terminal() -> Result<Terminal<CrosstermBackend<std::io::Stdout>>> {
@@ -2027,6 +2112,8 @@ mod tests {
             room_id: "room".to_string(),
             room_name: None,
             group_path: std::path::PathBuf::from("target/test-group.json"),
+            groups: Vec::new(),
+            action: None,
             listen: "127.0.0.1:7777".parse().unwrap(),
             invite: String::new(),
             max_file: 0,
@@ -2230,5 +2317,432 @@ mod tests {
         let values = path_candidates(&prefix);
         assert!(values.iter().any(|value| value.ends_with("Alpha.TXT")));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+// ---------------------------------------------------------------- 启动大厅
+
+use crate::config::{self, GroupProfile};
+use crate::identity::Identity;
+use crate::paths::RuntimeDirs;
+use crate::room::RoomConfig;
+use crate::rooms;
+
+enum LobbyMode {
+    List,
+    Join,
+    Rename,
+    ConfirmDelete,
+}
+
+enum LobbyOutcome {
+    Selected(RoomConfig),
+    Quit,
+}
+
+struct LobbyApp {
+    dirs: RuntimeDirs,
+    identity: Identity,
+    nick: String,
+    groups: Vec<rooms::SavedGroup>,
+    index: usize,
+    mode: LobbyMode,
+    input: String,
+    cursor: usize,
+    status: Option<(String, bool)>,
+}
+
+impl LobbyApp {
+    fn new(dirs: RuntimeDirs, identity: Identity, nick: String) -> Result<Self> {
+        let groups = rooms::list(&dirs)?;
+        let index = groups.iter().position(|group| group.active).unwrap_or(0);
+        Ok(Self {
+            dirs,
+            identity,
+            nick,
+            groups,
+            index,
+            mode: LobbyMode::List,
+            input: String::new(),
+            cursor: 0,
+            status: None,
+        })
+    }
+
+    fn refresh(&mut self) -> Result<()> {
+        self.groups = rooms::list(&self.dirs)?;
+        if self.index >= self.groups.len() {
+            self.index = self.groups.len().saturating_sub(1);
+        }
+        Ok(())
+    }
+
+    fn set_status(&mut self, text: impl Into<String>, error: bool) {
+        self.status = Some((text.into(), error));
+    }
+
+    fn insert_text(&mut self, text: &str) {
+        let cleaned: String = text.chars().filter(|ch| !ch.is_control()).collect();
+        if cleaned.is_empty() {
+            return;
+        }
+        let byte = byte_index(&self.input, self.cursor);
+        self.input.insert_str(byte, &cleaned);
+        self.cursor += cleaned.chars().count();
+    }
+
+    fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let end = byte_index(&self.input, self.cursor);
+        let start = byte_index(&self.input, self.cursor - 1);
+        self.input.replace_range(start..end, "");
+        self.cursor -= 1;
+    }
+
+    fn on_key(&mut self, key: KeyEvent) -> Option<LobbyOutcome> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match self.mode {
+            LobbyMode::List => match key.code {
+                KeyCode::Char('q') if !ctrl => return Some(LobbyOutcome::Quit),
+                KeyCode::Esc => return Some(LobbyOutcome::Quit),
+                KeyCode::Up => {
+                    if self.index > 0 {
+                        self.index -= 1;
+                    }
+                }
+                KeyCode::Down => {
+                    if self.index + 1 < self.groups.len() {
+                        self.index += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    let Some(group) = self.groups.get(self.index) else {
+                        self.set_status("还没有频道，按 c 创建或 j 加入", true);
+                        return None;
+                    };
+                    match rooms::load(&self.dirs, &group.id) {
+                        Ok(Some(room)) => {
+                            let _ = rooms::set_active(&self.dirs, &room.id);
+                            return Some(LobbyOutcome::Selected(room));
+                        }
+                        Ok(None) => self.set_status("频道配置缺失", true),
+                        Err(err) => self.set_status(format!("读取频道失败: {err}"), true),
+                    }
+                }
+                KeyCode::Char('c') if !ctrl => {
+                    let room = RoomConfig::create(&self.identity);
+                    match rooms::save(&self.dirs, &room) {
+                        Ok(()) => {
+                            let mut profile =
+                                GroupProfile::load(&self.dirs, &room.id).unwrap_or_default();
+                            if profile.nick.is_none() {
+                                profile.nick = Some(self.nick.clone());
+                                let _ = profile.save(&self.dirs, &room.id);
+                            }
+                            let _ = rooms::set_active(&self.dirs, &room.id);
+                            return Some(LobbyOutcome::Selected(room));
+                        }
+                        Err(err) => self.set_status(format!("创建频道失败: {err}"), true),
+                    }
+                }
+                KeyCode::Char('j') if !ctrl => {
+                    self.mode = LobbyMode::Join;
+                    self.input.clear();
+                    self.cursor = 0;
+                }
+                KeyCode::Char('r') if !ctrl => {
+                    if let Some(group) = self.groups.get(self.index) {
+                        self.mode = LobbyMode::Rename;
+                        self.input = group.name.clone();
+                        self.cursor = self.input.chars().count();
+                    }
+                }
+                KeyCode::Char('d') if !ctrl => {
+                    if self.groups.get(self.index).is_some() {
+                        self.mode = LobbyMode::ConfirmDelete;
+                    }
+                }
+                _ => {}
+            },
+            LobbyMode::Join => match key.code {
+                KeyCode::Esc => {
+                    self.mode = LobbyMode::List;
+                    self.input.clear();
+                    self.cursor = 0;
+                }
+                KeyCode::Enter => {
+                    let text = self.input.trim().to_string();
+                    if text.is_empty() {
+                        self.set_status("邀请码不能为空", true);
+                        return None;
+                    }
+                    match RoomConfig::parse_invite_full(&text) {
+                        Ok((parsed, _addresses)) => match rooms::load(&self.dirs, &parsed.id) {
+                            Ok(Some(mut existing)) => {
+                                for entry in &parsed.entries {
+                                    if !existing.entries.iter().any(|item| item == entry) {
+                                        existing.entries.push(entry.clone());
+                                    }
+                                }
+                                for relay in &parsed.relays {
+                                    if !existing.relays.iter().any(|item| item == relay) {
+                                        existing.relays.push(relay.clone());
+                                    }
+                                }
+                                match rooms::save(&self.dirs, &existing) {
+                                    Ok(()) => return Some(LobbyOutcome::Selected(existing)),
+                                    Err(err) => {
+                                        self.set_status(format!("保存频道失败: {err}"), true)
+                                    }
+                                }
+                            }
+                            Ok(None) => match rooms::save(&self.dirs, &parsed) {
+                                Ok(()) => {
+                                    let mut profile = GroupProfile::load(&self.dirs, &parsed.id)
+                                        .unwrap_or_default();
+                                    if profile.nick.is_none() {
+                                        profile.nick = Some(self.nick.clone());
+                                        let _ = profile.save(&self.dirs, &parsed.id);
+                                    }
+                                    let _ = rooms::set_active(&self.dirs, &parsed.id);
+                                    return Some(LobbyOutcome::Selected(parsed));
+                                }
+                                Err(err) => self.set_status(format!("保存频道失败: {err}"), true),
+                            },
+                            Err(err) => self.set_status(format!("读取频道失败: {err}"), true),
+                        },
+                        Err(err) => self.set_status(format!("邀请码无效: {err}"), true),
+                    }
+                }
+                KeyCode::Backspace => self.backspace(),
+                KeyCode::Left => {
+                    if self.cursor > 0 {
+                        self.cursor -= 1;
+                    }
+                }
+                KeyCode::Right => {
+                    if self.cursor < self.input.chars().count() {
+                        self.cursor += 1;
+                    }
+                }
+                KeyCode::Char(ch) if !ctrl => self.insert_text(&ch.to_string()),
+                _ => {}
+            },
+            LobbyMode::Rename => match key.code {
+                KeyCode::Esc => {
+                    self.mode = LobbyMode::List;
+                    self.input.clear();
+                    self.cursor = 0;
+                }
+                KeyCode::Enter => {
+                    let name: String = crate::util::sanitize_text(&self.input)
+                        .chars()
+                        .take(40)
+                        .collect();
+                    if name.is_empty() {
+                        self.set_status("频道名称不能为空", true);
+                        return None;
+                    }
+                    let Some(group) = self.groups.get(self.index) else {
+                        self.mode = LobbyMode::List;
+                        return None;
+                    };
+                    let path = config::group_path(&self.dirs, &group.id);
+                    let mut profile = GroupProfile::load_at(&path).unwrap_or_default();
+                    profile.name = Some(name.clone());
+                    match profile.save_at(&path) {
+                        Ok(()) => {
+                            self.mode = LobbyMode::List;
+                            let _ = self.refresh();
+                            self.set_status("频道名称已更新", false);
+                        }
+                        Err(err) => self.set_status(format!("保存名称失败: {err}"), true),
+                    }
+                }
+                KeyCode::Backspace => self.backspace(),
+                KeyCode::Left => {
+                    if self.cursor > 0 {
+                        self.cursor -= 1;
+                    }
+                }
+                KeyCode::Right => {
+                    if self.cursor < self.input.chars().count() {
+                        self.cursor += 1;
+                    }
+                }
+                KeyCode::Char(ch) if !ctrl => self.insert_text(&ch.to_string()),
+                _ => {}
+            },
+            LobbyMode::ConfirmDelete => match key.code {
+                KeyCode::Esc => self.mode = LobbyMode::List,
+                KeyCode::Enter | KeyCode::Char('y') => {
+                    if let Some(group) = self.groups.get(self.index).cloned() {
+                        match rooms::remove(&self.dirs, &group.id) {
+                            Ok(()) => {
+                                self.mode = LobbyMode::List;
+                                let _ = self.refresh();
+                                self.set_status("频道已从本机删除", false);
+                            }
+                            Err(err) => self.set_status(format!("删除失败: {err}"), true),
+                        }
+                    }
+                }
+                _ => {}
+            },
+        }
+        None
+    }
+
+    fn draw(&self, frame: &mut Frame) {
+        let area = frame.area();
+        frame.render_widget(Clear, area);
+        frame.render_widget(
+            Block::default().style(Style::default().bg(Color::Black)),
+            area,
+        );
+        let width = 72.min(area.width.saturating_sub(4)).max(24);
+        let height = (self.groups.len() as u16 + 12)
+            .min(area.height.saturating_sub(2))
+            .max(12);
+        let x = area.x + area.width.saturating_sub(width) / 2;
+        let y = area.y + area.height.saturating_sub(height) / 2;
+        let rect = Rect::new(x, y, width, height);
+
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        if self.groups.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "还没有保存的频道。",
+                Style::default().fg(Color::Gray),
+            )));
+        } else {
+            for (index, group) in self.groups.iter().enumerate() {
+                let selected = index == self.index;
+                let marker = if selected { "> " } else { "  " };
+                let active = if group.active { "● " } else { "  " };
+                let style = if selected {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                let id = &group.id[..group.id.len().min(8)];
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "{marker}{active}{:<30} {id}",
+                        truncate_width(&group.name, 30)
+                    ),
+                    style,
+                )));
+            }
+        }
+
+        lines.push(Line::from(""));
+        if let Some((text, error)) = &self.status {
+            lines.push(Line::from(Span::styled(
+                text.clone(),
+                Style::default().fg(if *error { Color::Red } else { Color::Yellow }),
+            )));
+        }
+        match self.mode {
+            LobbyMode::List => {
+                lines.push(Line::from(Span::styled(
+                    "↑/↓ 选择 · Enter 进入 · c 创建 · j 加入 · r 重命名 · d 删除 · q 退出",
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+            LobbyMode::Join => {
+                lines.push(Line::from(Span::styled(
+                    "粘贴邀请码后回车加入（Esc 返回）",
+                    Style::default().fg(Color::Cyan),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!("> {}", truncate_width(&self.input, width as usize - 6)),
+                    Style::default().fg(Color::White),
+                )));
+            }
+            LobbyMode::Rename => {
+                lines.push(Line::from(Span::styled(
+                    "输入新的频道名称后回车（Esc 返回）",
+                    Style::default().fg(Color::Cyan),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!("> {}", truncate_width(&self.input, width as usize - 6)),
+                    Style::default().fg(Color::White),
+                )));
+            }
+            LobbyMode::ConfirmDelete => {
+                let name = self
+                    .groups
+                    .get(self.index)
+                    .map(|group| group.name.clone())
+                    .unwrap_or_default();
+                lines.push(Line::from(Span::styled(
+                    format!("删除频道「{name}」？Enter/y 确认 · Esc 取消"),
+                    Style::default().fg(Color::Red),
+                )));
+            }
+        }
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Cyan))
+            .style(Style::default().bg(Color::Black))
+            .title(Line::from(Span::styled(
+                " ASA · 选择频道 ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        frame.render_widget(Paragraph::new(lines).block(block), rect);
+
+        if matches!(self.mode, LobbyMode::Join | LobbyMode::Rename) {
+            let status_line = u16::from(self.status.is_some());
+            let cursor_y = y + 1 + self.groups.len() as u16 + 2 + status_line;
+            let cursor_x = x + 3 + self.cursor as u16;
+            if cursor_y < area.bottom() && cursor_x < area.right() {
+                frame.set_cursor_position((cursor_x, cursor_y));
+            }
+        }
+    }
+}
+
+/// 启动时的不透明选择框：选择已保存频道，或创建/加入/重命名/删除。
+pub fn lobby(dirs: RuntimeDirs, identity: Identity, nick: String) -> Result<Option<RoomConfig>> {
+    install_panic_hook();
+    let mut terminal = init_terminal()?;
+    let mut app = LobbyApp::new(dirs, identity, nick)?;
+    loop {
+        terminal.draw(|frame| app.draw(frame))?;
+        if event::poll(Duration::from_millis(80))? {
+            match event::read()? {
+                Event::Key(key) => {
+                    if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+                        match app.on_key(key) {
+                            Some(LobbyOutcome::Selected(room)) => {
+                                restore_terminal(&mut terminal)?;
+                                return Ok(Some(room));
+                            }
+                            Some(LobbyOutcome::Quit) => {
+                                restore_terminal(&mut terminal)?;
+                                return Ok(None);
+                            }
+                            None => {}
+                        }
+                    }
+                }
+                Event::Paste(text) => {
+                    if matches!(app.mode, LobbyMode::Join | LobbyMode::Rename) {
+                        app.insert_text(&text);
+                    }
+                }
+                Event::Resize(_, _) => {}
+                _ => {}
+            }
+        }
     }
 }

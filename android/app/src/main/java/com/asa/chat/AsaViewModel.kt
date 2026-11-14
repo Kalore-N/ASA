@@ -418,6 +418,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                     val fromNick = event.optString("nick")
                     val mine = event.optBoolean("mine")
                     val mentions = event.optJSONArray("mentions")?.toStringList().orEmpty()
+                    val history = event.optBoolean("history")
                     val mentionedMe = !mine && me.isNotBlank() && mentions.contains(me)
                     if (mentionedMe) mentioned = fromNick
                     if (!mine && !AppVisibility.foreground) {
@@ -430,7 +431,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                             preview = ref.optString("preview"),
                         )
                     }
-                    messages += ChatMessage(
+                    val chat = ChatMessage(
                         key = nextKey++,
                         id = msgId,
                         nick = fromNick,
@@ -441,6 +442,12 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                         mentionsMe = mentionedMe,
                         reply = reply,
                     )
+                    if (history) {
+                        val position = messages.indexOfFirst { it.ts > chat.ts }
+                        if (position < 0) messages.add(chat) else messages.add(position, chat)
+                    } else {
+                        messages.add(chat)
+                    }
                 }
                 "system" -> messages += ChatMessage(
                     key = nextKey++,

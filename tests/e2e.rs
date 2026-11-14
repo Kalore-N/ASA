@@ -52,6 +52,42 @@ async fn start_node(
         auto_accept: false,
         mdns: false,
         bootstrap: Vec::new(),
+        sync_history: false,
+        sync_count: 50,
+        relays: Vec::new(),
+    };
+    let handle = Node::start(cfg).await.unwrap();
+    (handle, dirs)
+}
+
+async fn start_node_sync(
+    root: &Path,
+    nick: &str,
+    identity: Identity,
+    room: &RoomConfig,
+    self_since: u64,
+) -> (NodeHandle, RuntimeDirs) {
+    let dirs = RuntimeDirs::ensure(root).unwrap();
+    let cfg = NodeConfig {
+        signing: identity.signing.clone(),
+        pubkey: identity.pubkey_hex(),
+        nick: Arc::new(RwLock::new(nick.to_string())),
+        room_id: room.id.clone(),
+        room_key: room.key,
+        room_created: room.created_at,
+        creator: room.creator.clone(),
+        self_since,
+        bind: "127.0.0.1:0".parse().unwrap(),
+        advertise: None,
+        dirs: dirs.clone(),
+        identity_path: identity_path(&dirs),
+        downloads: dirs.downloads.clone(),
+        max_file: 8 * 1024 * 1024,
+        auto_accept: false,
+        mdns: false,
+        bootstrap: Vec::new(),
+        sync_history: true,
+        sync_count: 50,
         relays: Vec::new(),
     };
     let handle = Node::start(cfg).await.unwrap();
@@ -581,6 +617,8 @@ async fn start_node_relay(
         auto_accept: false,
         mdns: false,
         bootstrap: Vec::new(),
+        sync_history: false,
+        sync_count: 50,
         relays,
     };
     let handle = Node::start(cfg).await.unwrap();
@@ -661,6 +699,51 @@ async fn relay_connects_two_nodes_without_direct_address() {
         ),
         "B 应通过中继收到消息"
     );
+
+    node_a.cmd.send(Cmd::Quit).ok();
+    node_b.cmd.send(Cmd::Quit).ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sync_pulls_recent_history_from_peer() {
+    let root_a = unique_root("sync-a");
+    let root_b = unique_root("sync-b");
+    let identity_a = Identity::generate();
+    let identity_b = Identity::generate();
+    let room = RoomConfig::create(&identity_a);
+
+    let (node_a, _dirs_a) =
+        start_node_sync(&root_a, "alice", identity_a.clone(), &room, room.created_at).await;
+    node_a
+        .cmd
+        .send(Cmd::Chat {
+            text: "before bob joined".into(),
+            reply: None,
+        })
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let (node_b, _dirs_b) = start_node_sync(
+        &root_b,
+        "bob",
+        identity_b.clone(),
+        &room,
+        asa::util::now_ms(),
+    )
+    .await;
+    connect(&node_b, &node_a);
+
+    let event = wait_event(&node_b.events, Duration::from_secs(10), |ev| {
+        matches!(
+            ev,
+            NodeEvent::Chat {
+                text,
+                history: true,
+                ..
+            } if text == "before bob joined"
+        )
+    });
+    assert!(event.is_some(), "B 应从 A 同步到加入前的消息");
 
     node_a.cmd.send(Cmd::Quit).ok();
     node_b.cmd.send(Cmd::Quit).ok();

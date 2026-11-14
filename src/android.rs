@@ -234,6 +234,8 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
         auto_accept,
         mdns,
         bootstrap,
+        sync_history: config.sync.enabled,
+        sync_count: config.sync.count,
         relays,
     };
 
@@ -286,6 +288,7 @@ fn event_json(event: NodeEvent) -> serde_json::Value {
             id,
             mentions,
             reply,
+            history,
         } => json!({
             "type": "chat",
             "from": from,
@@ -296,6 +299,7 @@ fn event_json(event: NodeEvent) -> serde_json::Value {
             "id": id,
             "mentions": mentions,
             "reply": reply,
+            "history": history,
         }),
         NodeEvent::System { text, ts } => {
             json!({ "type": "system", "text": text, "ts": ts })

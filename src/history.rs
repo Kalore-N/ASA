@@ -68,8 +68,22 @@ impl History {
         reply: Option<&ReplyRef>,
         mentions: &[String],
     ) {
+        self.append_chat_at(from, from_id, text, id, now_ms(), reply, mentions);
+    }
+
+    /// 追加一条带原始时间戳的聊天记录（用于历史同步）。
+    pub fn append_chat_at(
+        &self,
+        from: &str,
+        from_id: &str,
+        text: &str,
+        id: &str,
+        ts: u64,
+        reply: Option<&ReplyRef>,
+        mentions: &[String],
+    ) {
         self.write(Record {
-            ts: now_ms(),
+            ts,
             kind: "chat",
             from,
             from_id,

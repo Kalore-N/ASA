@@ -26,7 +26,7 @@ use crate::discovery::{Discovered, Discovery};
 use crate::history::History;
 use crate::net::{self, HandshakeCtx, NetEvent};
 use crate::paths::RuntimeDirs;
-use crate::proto::{self, Frame, Hello, MemberInfo, Payload, ReplyRef};
+use crate::proto::{self, Frame, Hello, MemberInfo, Payload, ReplyRef, SyncMessage};
 use crate::relay::{self, RelayCmd};
 use crate::room::RoomConfig;
 use crate::util::{self, human_size, now_ms, short_id};
@@ -67,6 +67,9 @@ pub struct NodeConfig {
     pub auto_accept: bool,
     pub mdns: bool,
     pub bootstrap: Vec<SocketAddr>,
+    /// 加入频道后自动向在线成员拉取最近消息。
+    pub sync_history: bool,
+    pub sync_count: u32,
     /// 中继服务器地址（可多个，当前使用第一个可解析的）。
     pub relays: Vec<String>,
 }
@@ -96,6 +99,8 @@ pub enum Cmd {
     SetNick(String),
     /// 修改本机显示的频道名称（不广播）。
     SetRoomName(String),
+    /// 向在线成员请求最近聊天记录。
+    Sync,
     /// 连接 `ip:port` 或 `host:port`。
     Connect(String),
     DialAddr(SocketAddr),
@@ -150,6 +155,8 @@ pub enum NodeEvent {
         mentions: Vec<String>,
         /// 回复引用。
         reply: Option<ReplyRef>,
+        /// 是否为历史同步消息。
+        history: bool,
     },
     System {
         text: String,
@@ -385,6 +392,9 @@ impl Node {
             relay_tx,
             relay_tried: HashMap::new(),
             self_ips,
+            recent: VecDeque::new(),
+            sync_history: cfg.sync_history,
+            sync_count: cfg.sync_count.clamp(1, 200),
         };
 
         let handle = NodeHandle {
@@ -440,6 +450,9 @@ struct NodeState {
     relay_tx: Vec<mpsc::Sender<RelayCmd>>,
     relay_tried: HashMap<String, Instant>,
     self_ips: Vec<IpAddr>,
+    recent: VecDeque<SyncMessage>,
+    sync_history: bool,
+    sync_count: u32,
 }
 
 impl NodeState {
@@ -535,6 +548,7 @@ impl NodeState {
             }
             Cmd::SetNick(nick) => self.set_nick(nick),
             Cmd::SetRoomName(name) => self.set_room_name(name),
+            Cmd::Sync => self.request_history(),
             Cmd::Connect(text) => self.connect_text(&text),
             Cmd::DialAddr(addr) => {
                 if is_self_target(self.ctx.listen, &self.self_ips, addr) {
@@ -812,6 +826,14 @@ impl NodeState {
         self.emit_members();
         self.send_presence_to(&peer);
         self.send_members_to(&peer);
+        if self.sync_history {
+            let _ = self.send_to(
+                &peer,
+                &Payload::SyncRequest {
+                    limit: self.sync_count,
+                },
+            );
+        }
         self.recompute_host();
         if self.is_host() {
             self.broadcast_members();
@@ -898,6 +920,8 @@ impl NodeState {
             &payload,
         ) {
             Ok((id, raw)) => {
+                // 标记本地消息 id，避免中继回传时重复显示。
+                self.mark_seen(&id);
                 self.broadcast(&raw, &[]);
                 self.record_chat(
                     &self.ctx.pubkey.clone(),
@@ -930,19 +954,63 @@ impl NodeState {
         reply: Option<&ReplyRef>,
     ) {
         let nick = self.nick_of(from);
+        self.record_chat_at(from, id, &nick, text, now_ms(), mentions, reply, false);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_chat_at(
+        &mut self,
+        from: &str,
+        id: &str,
+        nick: &str,
+        text: &str,
+        ts: u64,
+        mentions: &[String],
+        reply: Option<&ReplyRef>,
+        history: bool,
+    ) {
         let mine = from == self.ctx.pubkey;
         self.history
-            .append_chat(&nick, &short_id(from), text, id, reply, mentions);
+            .append_chat_at(nick, &short_id(from), text, id, ts, reply, mentions);
+        self.recent.push_back(SyncMessage {
+            id: id.to_string(),
+            from: from.to_string(),
+            nick: nick.to_string(),
+            text: text.to_string(),
+            ts,
+            mentions: mentions.to_vec(),
+            reply: reply.cloned(),
+        });
+        while self.recent.len() > 500 {
+            self.recent.pop_front();
+        }
         let _ = self.ev.send(NodeEvent::Chat {
             from: from.to_string(),
-            nick,
+            nick: nick.to_string(),
             text: text.to_string(),
-            ts: now_ms(),
+            ts,
             mine,
             id: id.to_string(),
             mentions: mentions.to_vec(),
             reply: reply.cloned(),
+            history,
         });
+    }
+
+    fn request_history(&mut self) {
+        if self.peers.is_empty() {
+            self.info("当前没有在线成员，无法更新聊天内容");
+            return;
+        }
+        let limit = self.sync_count;
+        let peers: Vec<String> = self.peers.keys().cloned().collect();
+        let mut sent = 0;
+        for peer in peers {
+            if self.send_to(&peer, &Payload::SyncRequest { limit }).is_ok() {
+                sent += 1;
+            }
+        }
+        self.info(format!("已向 {sent} 位成员请求最近 {limit} 条消息"));
     }
 
     fn on_envelope(&mut self, conn_peer: &str, env: proto::Envelope) {
@@ -980,7 +1048,67 @@ impl NodeState {
                     r.preview = util::sanitize_text(&r.preview).chars().take(120).collect();
                     r
                 });
-                self.record_chat(&from, &env.id, &text, &mentions, reply.as_ref());
+                let nick = self.nick_of(&from);
+                self.record_chat_at(
+                    &from,
+                    &env.id,
+                    &nick,
+                    &text,
+                    env.ts,
+                    &mentions,
+                    reply.as_ref(),
+                    false,
+                );
+            }
+            Payload::SyncRequest { limit } => {
+                let limit = limit.clamp(1, 200) as usize;
+                let mut messages: Vec<SyncMessage> =
+                    self.recent.iter().rev().take(limit).cloned().collect();
+                messages.reverse();
+                if !messages.is_empty() {
+                    let _ = self.send_to(&from, &Payload::SyncBatch { messages });
+                }
+            }
+            Payload::SyncBatch { messages } => {
+                for message in messages.into_iter().take(200) {
+                    if message.from.len() != 64
+                        || message.id.is_empty()
+                        || !self.mark_seen(&message.id)
+                    {
+                        continue;
+                    }
+                    let text = util::sanitize_text(&message.text);
+                    if text.is_empty() {
+                        continue;
+                    }
+                    let text: String = text.chars().take(MAX_CHAT_CHARS * 2).collect();
+                    let nick = util::sanitize_text(&message.nick)
+                        .chars()
+                        .take(24)
+                        .collect::<String>();
+                    let nick = if nick.is_empty() {
+                        self.nick_of(&message.from)
+                    } else {
+                        nick
+                    };
+                    let mentions: Vec<String> = message.mentions.into_iter().take(64).collect();
+                    let reply = message.reply.map(|mut r| {
+                        r.id = r.id.chars().take(64).collect();
+                        r.nick = util::sanitize_text(&r.nick);
+                        r.preview = util::sanitize_text(&r.preview).chars().take(120).collect();
+                        r
+                    });
+                    self.record_chat_at(
+                        &message.from,
+                        &message.id,
+                        &nick,
+                        &text,
+                        message.ts,
+                        &mentions,
+                        reply.as_ref(),
+                        true,
+                    );
+                }
             }
             Payload::Presence {
                 nick,
