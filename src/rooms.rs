@@ -20,6 +20,8 @@ pub struct SavedGroup {
     pub name: String,
     pub last_used: u64,
     pub active: bool,
+    #[serde(default)]
+    pub easytier_enabled: bool,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -170,6 +172,7 @@ pub fn list(dirs: &RuntimeDirs) -> Result<Vec<SavedGroup>> {
                 name,
                 last_used: last_used.get(room.id.as_str()).copied().unwrap_or(0),
                 active: index.active.as_deref() == Some(room.id.as_str()),
+                easytier_enabled: profile.easytier_enabled.unwrap_or(false),
             });
         }
     }

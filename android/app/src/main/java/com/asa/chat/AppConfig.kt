@@ -60,25 +60,27 @@ object ConfigStore {
     fun save(context: Context, config: AppConfig) {
         val file = path(context)
         file.parentFile?.mkdirs()
-        val json = JSONObject().apply {
-            put("version", 1)
-            put(
-                "download_dir",
-                if (config.downloadDir.isBlank()) JSONObject.NULL else config.downloadDir,
-            )
-            put("max_file_mb", config.maxFileMb)
-            put("auto_accept", config.autoAccept)
-            put("ui", JSONObject().apply {
-                put("theme", config.theme)
-                put("font_size", config.fontSize)
-                put("compact", config.compact)
-            })
-            put("network", JSONObject().apply {
-                put("port", config.port)
-                put("mdns", config.mdns)
-                put("relays", JSONArray(config.relays))
-            })
-        }
+        // 保留 Rust 侧的 easytier / sync 等字段，只更新界面设置的字段。
+        val json = runCatching {
+            if (file.exists()) JSONObject(file.readText()) else JSONObject()
+        }.getOrDefault(JSONObject())
+        json.put("version", 1)
+        json.put(
+            "download_dir",
+            if (config.downloadDir.isBlank()) JSONObject.NULL else config.downloadDir,
+        )
+        json.put("max_file_mb", config.maxFileMb)
+        json.put("auto_accept", config.autoAccept)
+        json.put("ui", JSONObject().apply {
+            put("theme", config.theme)
+            put("font_size", config.fontSize)
+            put("compact", config.compact)
+        })
+        json.put("network", JSONObject().apply {
+            put("port", config.port)
+            put("mdns", config.mdns)
+            put("relays", JSONArray(config.relays))
+        })
         file.writeText(json.toString(2))
     }
 }

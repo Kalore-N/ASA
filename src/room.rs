@@ -23,6 +23,8 @@ pub struct RoomConfig {
     pub entries: Vec<String>,
     /// 中继服务器地址（跨网时使用）。
     pub relays: Vec<String>,
+    /// EasyTier 公共节点地址（邀请码里的 `&et=`）。
+    pub et_nodes: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -37,6 +39,8 @@ struct StoredRoom {
     entries: Vec<String>,
     #[serde(default)]
     relays: Vec<String>,
+    #[serde(default)]
+    et_nodes: Vec<String>,
 }
 
 fn default_version() -> u8 {
@@ -59,6 +63,7 @@ impl RoomConfig {
             creator,
             entries: Vec::new(),
             relays: Vec::new(),
+            et_nodes: Vec::new(),
         }
     }
 
@@ -83,6 +88,7 @@ impl RoomConfig {
             creator: stored.creator,
             entries: stored.entries,
             relays: stored.relays,
+            et_nodes: stored.et_nodes,
         }))
     }
 
@@ -99,6 +105,7 @@ impl RoomConfig {
             creator: self.creator.clone(),
             entries: self.entries.clone(),
             relays: self.relays.clone(),
+            et_nodes: self.et_nodes.clone(),
         };
         std::fs::write(path, serde_json::to_string_pretty(&stored)?)
             .with_context(|| format!("写入群配置失败: {}", path.display()))?;
@@ -134,6 +141,7 @@ impl RoomConfig {
             text.push_str(&crate::crypto::b64url_encode(entry.as_bytes()));
         }
         add_relay_params(&mut text, &self.relays, &mut seen);
+        add_et_params(&mut text, &self.et_nodes);
         text
     }
 
@@ -156,6 +164,7 @@ impl RoomConfig {
             text.push_str(&crate::crypto::b64url_encode(entry.as_bytes()));
         }
         add_relay_params(&mut text, &self.relays, &mut seen);
+        add_et_params(&mut text, &self.et_nodes);
         text
     }
 
@@ -197,6 +206,7 @@ impl RoomConfig {
             push_entry(&mut entries, addr);
         }
         let mut relays: Vec<String> = Vec::new();
+        let mut et_nodes: Vec<String> = Vec::new();
         if let Some(query) = query {
             for pair in query.split('&') {
                 let Some((k, v)) = pair.split_once('=') else {
@@ -229,6 +239,15 @@ impl RoomConfig {
                             }
                         }
                     }
+                    "et" => {
+                        if let Ok(bytes) = crate::crypto::b64url_decode(v) {
+                            if let Ok(value) = String::from_utf8(bytes) {
+                                if crate::easytier::normalize_node(&value).is_ok() {
+                                    push_entry(&mut et_nodes, &value);
+                                }
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -240,6 +259,7 @@ impl RoomConfig {
             creator,
             entries: entries.clone(),
             relays,
+            et_nodes,
         };
         Ok((config, entries))
     }
@@ -272,6 +292,17 @@ fn add_relay_params(
         }
         text.push_str("&r=");
         text.push_str(&crate::crypto::b64url_encode(relay.as_bytes()));
+    }
+}
+
+fn add_et_params(text: &mut String, nodes: &[String]) {
+    for node in nodes {
+        let node = node.trim();
+        if node.is_empty() {
+            continue;
+        }
+        text.push_str("&et=");
+        text.push_str(&crate::crypto::b64url_encode(node.as_bytes()));
     }
 }
 
@@ -347,6 +378,24 @@ mod tests {
             key_to_b64url(&room.key)
         );
         assert!(RoomConfig::parse_invite(&text).is_err());
+    }
+
+    #[test]
+    fn invite_carries_easytier_nodes() {
+        let ident = Identity::generate();
+        let mut room = RoomConfig::create(&ident);
+        room.et_nodes = vec![
+            "tcp://node.example:11010".to_string(),
+            "wss://et.example:443".to_string(),
+        ];
+        for text in [
+            room.invite(Some("10.144.1.2:7777".parse().unwrap())),
+            room.invite_long(),
+        ] {
+            let (parsed, _) = RoomConfig::parse_invite(&text).unwrap();
+            assert_eq!(parsed.et_nodes, room.et_nodes);
+            assert!(text.contains("&et="));
+        }
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 这是我第一次尝试vibe coding的产物，随便写了点小东西玩玩
 
-当前版本：**1.4.0**
+当前版本：**1.5.0**
 
 ASA 是一个用 Rust 编写的**完全去中心化**终端频道工具：没有中心服务器，每个参与者都是对等节点。支持局域网自动发现、跨网手动连接、端到端加密、本地聊天记录（JSONL）以及文件传输。
 
@@ -69,6 +69,68 @@ asa invite     # 打印当前群的邀请码
 进入频道后可用 `/channels` 再次打开选择框，或用 `/switch <名称或 ID>` 直接切换。
 切换频道会重启网络节点，但不会删除任何本地文件。
 
+## EasyTier 内网穿透（可选）
+
+ASA 可以把 [EasyTier](https://github.com/EasyTier/EasyTier) 当作可选的虚拟局域网层：
+两台设备加入同一个 EasyTier 网络后，ASA 的 TCP 流量可以直接通过虚拟 IP 互通，
+不再依赖应用层中继。
+
+EasyTier 是**可选**的。没有节点、没有权限或启动失败时，ASA 会自动回退到
+局域网 mDNS / 多中继，不阻塞聊天。
+
+### 添加节点
+
+节点地址来自 EasyTier 公共节点列表（例如 `https://info.qtet.cn/uptime/easytier`），
+格式为 `tcp://host:11010`、`udp://host:11010`、`ws://host` 或 `wss://host`。
+部分公共节点地址被打码（含 `*`），需要去 EasyTier QQ 群获取完整地址。
+
+- TUI 频道大厅按 `n` 添加；聊天内 `/et add <地址>`、`/et list`、`/et remove <编号>`
+- Android：设置 → EasyTier 节点 → 添加；也可以点「从 qtet 监控页一键导入」，自动导入未打码节点
+- 没有节点时，打开 ASA 会在频道大厅提示添加，但允许跳过
+
+### 为频道开启
+
+- TUI：频道大厅按 `e` 切换当前频道的 EasyTier；聊天内 `/et on` / `/et off`
+- Android：频道列表右侧开关
+- 默认关闭，按频道单独选择；切换后会自动重启频道
+
+### 邀请码
+
+邀请码已经包含频道密钥，所以 EasyTier 的网络名和密钥由频道密钥派生，
+不需要额外传递。邀请码只增加：
+
+```
+&et=<base64url(节点地址)>
+```
+
+开启 EasyTier 后，邀请码的主地址会变成宿主的 EasyTier 虚拟 IP
+（例如 `asa://...@10.144.23.74:7777?...&et=dGNwOi8v...`），
+同时保留 `&e=` 局域网备用入口。加入方解析 `&et=` 后会自动为该频道开启 EasyTier。
+
+每个成员用 ASA 公钥派生固定的 `10.144.x.y/16` 虚拟 IP；宿主实际使用的地址
+会写进邀请码，不依赖 DHCP。
+
+### 权限
+
+- **Linux**：EasyTier 需要 `CAP_NET_ADMIN`。安装包会在安装时执行
+  `setcap cap_net_admin,cap_net_raw+ep /usr/lib/asa/easytier-core`；
+  便携版首次使用执行：
+  `sudo setcap cap_net_admin,cap_net_raw+ep ./easytier-core`
+- **Windows**：需要以管理员身份运行 `asa.exe`，EasyTier 才能创建 TUN 网卡
+- **Android**：使用 VpnService，不需要 root；首次开启会弹出系统 VPN 授权
+
+### 与其他 VPN 共存
+
+Android 同一用户同时只能有一个 **VpnService**。ASA 使用 per-app VPN：
+只把 ASA 自己的流量路由进 EasyTier TUN，其他应用不受影响。
+但如果设备上已经有另一个 VpnService（大多数 VPN/代理应用），
+启动 ASA 的 EasyTier 会替换它。需要真正同时运行两个 VPN 时，
+可以把 ASA 装进工作资料（Shelter / Island / Android for Work），
+个人资料和工作资料可以各自保持一个 VPN。
+
+如果希望完全不影响现有 VPN，可以在频道列表中关闭该频道的 EasyTier，
+继续使用 ASA 自带的局域网/中继。
+
 ## TUI 操作
 
 | 按键 | 作用 |
@@ -103,6 +165,7 @@ asa invite     # 打印当前群的邀请码
 | `/sync` | 向在线成员请求最近聊天记录（默认也会自动同步） |
 | `/channels` | 打开频道选择框 |
 | `/switch <名称或 ID>` | 切换到指定频道 |
+| `/et [status\|on\|off\|add <地址>\|list\|remove <编号>]` | 管理 EasyTier 节点与当前频道内网穿透 |
 | `/reply [编号]` | 回复指定消息；不带编号时列出最近消息的编号 |
 | `/clear` | 清空当前屏幕 |
 | `/quit` | 退出 |
@@ -147,7 +210,8 @@ asa import <文件>               导入群文件
   "auto_accept": false,
   "ui": { "theme": "dark", "font_size": 15, "compact": false },
   "network": { "port": null, "mdns": true, "relays": [] },
-  "sync": { "enabled": true, "count": 50 }
+  "sync": { "enabled": true, "count": 50 },
+  "easytier": { "nodes": [] }
 }
 ```
 
@@ -159,6 +223,7 @@ asa import <文件>               导入群文件
 - `network.relays`：跨网中继地址，默认空；部署中继后执行 `asa relay add` 写入。
 - `sync.enabled`：加入频道后自动向在线成员拉取最近聊天记录，默认开启。
 - `sync.count`：每次请求的最大条数，默认 50，最高 200。同步内容会写入本地 JSONL 日志，并按原时间插入界面；可用 `/sync` 手动再拉取一次。
+- `easytier.nodes`：手动导入或一键导入的 EasyTier 节点地址列表，默认空；为空时频道仍可用局域网/中继。
 
 群配置在 `runtime/data/groups/<频道 ID>.json`，`null` 表示继承全局：
 
@@ -169,7 +234,8 @@ asa import <文件>               导入群文件
   "download_dir": null,
   "max_file_mb": null,
   "auto_accept": null,
-  "notify_mentions": null
+  "notify_mentions": null,
+  "easytier_enabled": null
 }
 ```
 
@@ -177,6 +243,7 @@ asa import <文件>               导入群文件
 - `nick`：当前频道内昵称；聊天页 `/name` 会同时更新它。
 - `download_dir` / `max_file_mb` / `auto_accept`：按群覆盖全局。
 - `notify_mentions`：是否提示 @ 提及。
+- `easytier_enabled`：是否为此频道开启 EasyTier 内网穿透；`null` 表示关闭。
 
 ## 跨网与群固定
 
@@ -298,6 +365,9 @@ deploy/         中继的 Docker / systemd / Fly.io 部署文件
 - 可配置多个中继，客户端会同时连接；单个中继故障时其他中继仍可用。
 - 没有离线消息队列，对方离线时发送的文件请求会失败。
 - 文件传输不限制接收方磁盘空间，请自行注意。
+- EasyTier 节点地址可能被打码；打码地址无法使用，需要从 EasyTier QQ 群获取完整地址。
+- Linux 便携版需要手动 `setcap`，Windows 需要管理员权限；否则 EasyTier 会回退到局域网/中继。
+- Android 同一用户只能有一个 VpnService；ASA 使用 per-app VPN，只影响 ASA 自身，但会替换其他 VpnService。
 
 ## 平台与安装包
 
@@ -305,24 +375,25 @@ GitHub Releases 提供各平台的可运行产物；源码仓库不包含构建�
 
 | 平台 | 文件 | 说明 |
 | --- | --- | --- |
-| Linux x86-64 | `asa-1.4.0-linux-x86_64` | musl 静态单文件，无 glibc 依赖 |
-| Windows x86-64 | `asa-1.4.0-windows-x86_64.exe` | MSVC 构建，控制台程序 |
-| Android arm64 / x86_64 | `asa-1.4.0-android.apk` | Kotlin + Compose 图形界面，可直接安装 |
-| Arch Linux x86-64 | `asa-1.4.0-1-x86_64.pkg.tar.zst` | 含二进制、man、桌面入口与图标 |
-| Debian / Ubuntu amd64 | `asa_1.4.0_amd64.deb` | 含二进制、man、桌面入口与图标 |
-| Fedora / RHEL x86-64 | `asa-1.4.0-1.x86_64.rpm` | 含二进制、man、桌面入口与图标 |
+| Linux x86-64 | `asa-1.5.0-linux-x86_64.tar.gz` | 含 `asa`、`easytier-core`、`easytier-cli` |
+| Windows x86-64 | `asa-1.5.0-windows-x86_64.zip` | 含 `asa.exe`、EasyTier、`wintun.dll` |
+| Android arm64 | `asa-1.5.0-android-arm64.apk` | 真机推荐；含 arm64 EasyTier 原生库 |
+| Android x86_64 | `asa-1.5.0-android-x86_64.apk` | 模拟器 / x86_64 平板 |
+| Arch Linux x86-64 | `asa-1.5.0-1-x86_64.pkg.tar.zst` | 含二进制、EasyTier、man、桌面入口与图标 |
+| Debian / Ubuntu amd64 | `asa_1.5.0_amd64.deb` | 含二进制、EasyTier、man、桌面入口与图标 |
+| Fedora / RHEL x86-64 | `asa-1.5.0-1.x86_64.rpm` | 含二进制、EasyTier、man、桌面入口与图标 |
 
 ### Linux 发行版包
 
 ```bash
 # Arch
-sudo pacman -U asa-1.4.0-1-x86_64.pkg.tar.zst
+sudo pacman -U asa-1.5.0-1-x86_64.pkg.tar.zst
 
 # Debian / Ubuntu
-sudo apt install ./asa_1.4.0_amd64.deb
+sudo apt install ./asa_1.5.0_amd64.deb
 
 # Fedora / RHEL
-sudo dnf install ./asa-1.4.0-1.x86_64.rpm
+sudo dnf install ./asa-1.5.0-1.x86_64.rpm
 ```
 
 安装后直接运行 `asa`，或从应用菜单打开 ASA。安装包是静态二进制，不依赖系统 Rust 工具链。
@@ -332,9 +403,9 @@ sudo dnf install ./asa-1.4.0-1.x86_64.rpm
 在 Windows Terminal、PowerShell 或 CMD 中运行：
 
 ```powershell
-.\asa-windows-x86_64.exe --help
-.\asa-windows-x86_64.exe init --name alice
-.\asa-windows-x86_64.exe
+.\asa.exe --help
+.\asa.exe init --name alice
+.\asa.exe
 ```
 
 ### Android

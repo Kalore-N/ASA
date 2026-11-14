@@ -55,6 +55,12 @@ struct StartConfig {
     relays: Vec<String>,
     #[serde(default)]
     room_id: Option<String>,
+    /// EasyTier 虚拟 IP:端口；为空时使用局域网地址。
+    #[serde(default)]
+    advertise: Option<String>,
+    /// 写入邀请码的 EasyTier 节点。
+    #[serde(default)]
+    et_nodes: Vec<String>,
 }
 
 fn default_mode() -> String {
@@ -145,6 +151,10 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
     };
 
     let mut profile = GroupProfile::load(&dirs, &room.id).unwrap_or_default();
+    if profile.easytier_enabled.is_none() && !room.et_nodes.is_empty() {
+        profile.easytier_enabled = Some(true);
+        let _ = profile.save(&dirs, &room.id);
+    }
     let nick = cfg
         .nick
         .clone()
@@ -192,7 +202,39 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
         util::now_ms()
     };
     let bind: SocketAddr = format!("0.0.0.0:{port}").parse().context("监听地址无效")?;
-    let advertise = Some(SocketAddr::new(util::lan_ipv4(), port));
+    let lan_ip = util::lan_ipv4();
+    let advertise = match cfg.advertise.as_deref() {
+        Some(text) if !text.trim().is_empty() => Some(
+            text.trim()
+                .parse::<SocketAddr>()
+                .with_context(|| format!("无效的 advertise 地址: {text}"))?,
+        ),
+        _ => Some(SocketAddr::new(lan_ip, port)),
+    };
+    let mut effective_et_nodes: Vec<String> = Vec::new();
+    for node in cfg
+        .et_nodes
+        .iter()
+        .chain(room.et_nodes.iter())
+        .chain(config.easytier.nodes.iter())
+    {
+        if let Ok(node) = crate::easytier::normalize_node(node) {
+            if !effective_et_nodes.contains(&node) {
+                effective_et_nodes.push(node);
+            }
+        }
+    }
+    let invite_et_nodes = if cfg.advertise.is_some() {
+        effective_et_nodes.clone()
+    } else {
+        Vec::new()
+    };
+    let mut extra_entries = Vec::new();
+    if advertise.map(|addr| addr.ip() != lan_ip).unwrap_or(false) {
+        extra_entries.push(format!("{lan_ip}:{port}"));
+    }
+    let (et_network, et_secret) = crate::easytier::derive_network(&room.key);
+    let et_ipv4 = crate::easytier::derive_ipv4(&pubkey).to_string();
 
     let mut bootstrap = Vec::new();
     for text in &invite_addresses {
@@ -227,6 +269,8 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
         self_since,
         bind,
         advertise,
+        extra_entries,
+        invite_et_nodes,
         dirs: dirs.clone(),
         identity_path: dirs.identity_path(),
         downloads: downloads.clone(),
@@ -259,6 +303,12 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
         "room_name": profile.name,
         "data_dir": root.display().to_string(),
         "downloads": downloads.display().to_string(),
+        "port": port,
+        "easytier_enabled": profile.easytier_enabled.unwrap_or(false),
+        "et_nodes": effective_et_nodes,
+        "et_network": et_network,
+        "et_secret": et_secret,
+        "et_ipv4": et_ipv4,
     });
     let status = info.clone();
     *BRIDGE.lock().unwrap() = Some(Bridge {
@@ -527,6 +577,47 @@ pub extern "system" fn Java_com_asa_chat_NativeBridge_groups<'local>(
         Err(err) => fail(err),
     };
     to_jstring(&mut env, result)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_asa_chat_NativeBridge_setEasytierEnabled<'local>(
+    mut env: jni::JNIEnv<'local>,
+    _this: jni::objects::JObject<'local>,
+    data_dir: jni::objects::JString<'local>,
+    room_id: jni::objects::JString<'local>,
+    enabled: jni::sys::jboolean,
+) -> jni::sys::jstring {
+    let result = (|| -> Result<serde_json::Value> {
+        let root = PathBuf::from(read_string(&mut env, &data_dir)?);
+        let room_id = read_string(&mut env, &room_id)?;
+        let dirs = RuntimeDirs::ensure(&root)?;
+        let path = crate::config::group_path(&dirs, &room_id);
+        if !path.exists() {
+            return Err(anyhow!("找不到频道配置: {room_id}"));
+        }
+        let mut profile = GroupProfile::load_at(&path).unwrap_or_default();
+        profile.easytier_enabled = Some(enabled != 0);
+        profile.save_at(&path)?;
+        if enabled != 0 {
+            let config = Config::ensure(&dirs)?;
+            if !config.easytier.nodes.is_empty() {
+                let mut room = crate::rooms::load(&dirs, &room_id)?
+                    .ok_or_else(|| anyhow!("找不到本地频道: {room_id}"))?;
+                if room.et_nodes.is_empty() {
+                    room.et_nodes = config.easytier.nodes.clone();
+                    crate::rooms::save(&dirs, &room)?;
+                }
+            }
+        }
+        Ok(json!({
+            "ok": true,
+            "easytier_enabled": enabled != 0,
+        }))
+    })();
+    match result {
+        Ok(value) => to_jstring(&mut env, value.to_string()),
+        Err(err) => to_jstring(&mut env, fail(err)),
+    }
 }
 
 #[no_mangle]

@@ -32,6 +32,21 @@ pub struct Config {
     pub network: NetworkPrefs,
     #[serde(default)]
     pub sync: SyncPrefs,
+    #[serde(default)]
+    pub easytier: EasyTierPrefs,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EasyTierPrefs {
+    /// 用户导入的 EasyTier 公共节点地址。
+    #[serde(default)]
+    pub nodes: Vec<String>,
+}
+
+impl Default for EasyTierPrefs {
+    fn default() -> Self {
+        Self { nodes: Vec::new() }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -95,6 +110,7 @@ impl Default for Config {
             ui: UiPrefs::default(),
             network: NetworkPrefs::default(),
             sync: SyncPrefs::default(),
+            easytier: EasyTierPrefs::default(),
         }
     }
 }
@@ -215,6 +231,9 @@ pub struct GroupProfile {
     pub auto_accept: Option<bool>,
     #[serde(default)]
     pub notify_mentions: Option<bool>,
+    /// 是否为此频道开启 EasyTier 内网穿透。
+    #[serde(default)]
+    pub easytier_enabled: Option<bool>,
 }
 
 impl GroupProfile {

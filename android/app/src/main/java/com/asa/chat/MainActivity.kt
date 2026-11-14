@@ -26,6 +26,12 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestPermission(),
     ) {}
 
+    private val vpnPermission = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        VpnPermission.result(result.resultCode == RESULT_OK)
+    }
+
     override fun onResume() {
         super.onResume()
         AppVisibility.foreground = true
@@ -45,6 +51,7 @@ class MainActivity : ComponentActivity() {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         val activity = this
+        VpnPermission.attach { intent -> vpnPermission.launch(intent) }
         setContent {
             var config by remember { mutableStateOf(ConfigStore.load(activity)) }
             var showSettings by remember { mutableStateOf(false) }
@@ -99,6 +106,9 @@ class MainActivity : ComponentActivity() {
                                 vm.showConnect()
                             },
                             onRename = { roomId, name -> vm.renameGroup(roomId, name) },
+                            onToggleEasytier = { roomId, enabled ->
+                                vm.toggleEasytier(roomId, enabled)
+                            },
                             onOpenSettings = { showSettings = true },
                         )
                         Screen.Chat -> ChatScreen(

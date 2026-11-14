@@ -1,13 +1,14 @@
 pkgname=asa
-pkgver=1.4.0
+pkgver=1.5.0
 pkgrel=1
 packager="Kalore-N <zhanghaoyu2421@outlook.com>"
 pkgdesc="去中心化 TUI 群聊"
 arch=('x86_64')
 url="https://github.com/Kalore-N/ASA"
 license=('MIT')
-depends=()
+depends=('libcap')
 options=('!strip')
+install=asa-easytier.install
 source=(
   "asa-${pkgver}"
   "asa.desktop"
@@ -15,14 +16,23 @@ source=(
   "asa.png"
   "LICENSE"
   "README.md"
+  "easytier-core"
+  "easytier-cli"
+  "EASYTIER_LICENSE"
+  "THIRD_PARTY_NOTICES.md"
+  "asa-easytier.install"
 )
-sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
 
 package() {
   install -Dm755 "$srcdir/asa-${pkgver}" "$pkgdir/usr/bin/asa"
+  install -Dm755 "$srcdir/easytier-core" "$pkgdir/usr/lib/asa/easytier-core"
+  install -Dm755 "$srcdir/easytier-cli" "$pkgdir/usr/lib/asa/easytier-cli"
   install -Dm644 "$srcdir/asa.desktop" "$pkgdir/usr/share/applications/asa.desktop"
   install -Dm644 "$srcdir/asa.1.gz" "$pkgdir/usr/share/man/man1/asa.1.gz"
   install -Dm644 "$srcdir/asa.png" "$pkgdir/usr/share/icons/hicolor/256x256/apps/asa.png"
   install -Dm644 "$srcdir/LICENSE" "$pkgdir/usr/share/licenses/asa/LICENSE"
+  install -Dm644 "$srcdir/EASYTIER_LICENSE" "$pkgdir/usr/share/licenses/asa/EASYTIER_LICENSE"
   install -Dm644 "$srcdir/README.md" "$pkgdir/usr/share/doc/asa/README.md"
+  install -Dm644 "$srcdir/THIRD_PARTY_NOTICES.md" "$pkgdir/usr/share/doc/asa/THIRD_PARTY_NOTICES.md"
 }

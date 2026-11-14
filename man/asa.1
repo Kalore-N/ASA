@@ -1,6 +1,6 @@
 .\" 中文排版不适合两端对齐
 .ds AD l
-.TH ASA 1 "2026-11-14" "asa 1.4.0" "用户命令"
+.TH ASA 1 "2026-11-14" "asa 1.5.0" "用户命令"
 .nh
 .SH NAME
 asa \- 去中心化 TUI 群聊工具
@@ -43,6 +43,9 @@ asa \- 去中心化 TUI 群聊工具
 .TP
 .B /switch 名称或ID
 切换到指定频道。
+.TP
+.B /et [status|on|off|add 地址|list|remove 编号]
+管理 EasyTier 节点与当前频道的内网穿透。修改后会自动重启当前频道。
 .TP
 .B /copy
 把最近的邀请码或保存路径放入输入行，便于复制。
@@ -225,6 +228,41 @@ TCP 监听端口，默认 7777。未显式指定时会复用
 .TP
 .B Esc
 清空输入行。
+.SH EASYTIER
+EasyTier 是可选的虚拟局域网层，用于跨网直连。节点地址从公共节点列表导入，
+格式为
+.BR tcp://host:11010 、
+.BR udp://host:11010 、
+.BR ws://host
+或
+.BR wss://host 。
+打码地址（含 *）需要从 EasyTier QQ 群获取完整地址。
+.PP
+TUI 频道大厅按
+.B n
+添加节点、按
+.B e
+切换当前频道的 EasyTier；聊天内使用
+.BR /et 。
+Android 在设置中管理节点，在频道列表右侧开关控制每个频道。
+.PP
+邀请码只增加
+.B &et=
+节点地址参数； EasyTier 网络名和密钥由频道密钥派生。开启后邀请码主地址
+是宿主的 EasyTier 虚拟 IP，并保留局域网备用入口。
+.PP
+Linux 需要给
+.B easytier-core
+授予
+.B cap_net_admin,cap_net_raw
+权限（安装包会自动执行，便携版需手动
+.BR setcap ）；
+Windows 需要以管理员身份运行；Android 使用 VpnService。
+EasyTier 启动失败时会回退到局域网/中继，不阻塞聊天。
+.PP
+Android 同一用户同时只能有一个 VpnService。ASA 使用 per-app VPN，
+只影响 ASA 自身；但会替换其他 VpnService。需要同时运行两个 VPN 时，
+可将 ASA 安装在工作资料中。
 .SH FILES
 .TP
 .I ~/Documents/ASA/runtime/data/identity.json
@@ -240,16 +278,22 @@ TCP 监听端口，默认 7777。未显式指定时会复用
 旧版单群配置；首次启动会自动迁移到 rooms/。
 .TP
 .I ~/Documents/ASA/runtime/data/config.json
-全局配置：下载目录、单文件上限、自动接受、UI 偏好、mDNS、中继与历史同步。
+全局配置：下载目录、单文件上限、自动接受、UI 偏好、mDNS、中继、历史同步与 EasyTier 节点。
 .TP
 .I ~/Documents/ASA/runtime/data/groups/\fI群ID\fR.json
-群配置：群内昵称，以及下载目录/大小上限/自动接受/提及提醒的覆盖项。
+群配置：群内昵称、EasyTier 开关，以及下载目录/大小上限/自动接受/提及提醒的覆盖项。
 .TP
 .I ~/Documents/ASA/runtime/data/settings.json
 兼容旧版本的本地设置（端口）。
 .TP
 .I ~/Documents/ASA/runtime/logs/asa\-\fI群ID\fR\-\fI日期\fR.jsonl
 本地聊天记录，每行一个 JSON 对象。
+.TP
+.I ~/Documents/ASA/runtime/data/easytier/\fI群ID\fR.toml
+EasyTier 运行配置（含派生网络密钥，权限 0600）。
+.TP
+.I ~/Documents/ASA/runtime/logs/easytier\-\fI群ID\fR.log
+EasyTier 子进程日志。
 .TP
 .I ~/Documents/ASA/runtime/downloads/
 接收完成的文件。
@@ -321,5 +365,8 @@ asa \-\-connect 203.0.113.10:7777
 没有离线消息队列：对方离线时发送的文件请求会失败。
 .PP
 文件传输需要双方同时在线，并且不会检查接收方的剩余磁盘空间。
+.PP
+EasyTier 需要 TUN 权限；没有权限或节点不可达时会回退到局域网/中继。
+Android 上 EasyTier 会占用系统唯一的 VpnService，可能替换其他 VPN。
 .SH "SEE ALSO"
 项目说明见 \fIREADME.md\fP。

@@ -6,6 +6,7 @@
 pub mod config;
 pub mod crypto;
 pub mod discovery;
+pub mod easytier;
 pub mod history;
 pub mod identity;
 pub mod net;

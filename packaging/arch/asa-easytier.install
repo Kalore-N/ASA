@@ -1,0 +1,9 @@
+post_install() {
+  if command -v setcap >/dev/null 2>&1; then
+    setcap cap_net_admin,cap_net_raw+ep /usr/lib/asa/easytier-core 2>/dev/null || true
+  fi
+}
+
+post_upgrade() {
+  post_install
+}

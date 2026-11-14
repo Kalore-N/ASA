@@ -59,6 +59,10 @@ pub struct NodeConfig {
     pub bind: SocketAddr,
     /// 对外通告地址；默认自动探测局域网 IP。
     pub advertise: Option<SocketAddr>,
+    /// 额外写入邀请码的入口地址（例如开启 EasyTier 时的局域网备用入口）。
+    pub extra_entries: Vec<String>,
+    /// 写入邀请码的 EasyTier 节点；为空时不携带 `&et=`。
+    pub invite_et_nodes: Vec<String>,
     pub dirs: RuntimeDirs,
     pub identity_path: PathBuf,
     /// 接收文件的保存目录（可被全局/群配置覆盖）。
@@ -342,8 +346,17 @@ impl Node {
             if saved.id == room.id {
                 room.entries = saved.entries;
                 room.relays = saved.relays;
+                room.et_nodes = saved.et_nodes;
             }
         }
+        for entry in &cfg.extra_entries {
+            let entry = entry.trim();
+            if !entry.is_empty() && !room.entries.iter().any(|item| item == entry) {
+                room.entries.push(entry.to_string());
+            }
+        }
+        // 只有本次会话真正开启 EasyTier 时才把节点写进邀请码。
+        room.et_nodes = cfg.invite_et_nodes.clone();
         // 邀请码同时携带全局配置里的中继地址。
         room.relays = cfg.relays.clone();
         let invite = room.invite(Some(advertise));

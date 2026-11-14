@@ -47,6 +47,7 @@ data class SavedGroup(
     val name: String,
     val lastUsed: Long,
     val active: Boolean,
+    val easytierEnabled: Boolean = false,
 )
 
 enum class Screen { Connect, Groups, Chat }
@@ -71,6 +72,9 @@ data class UiState(
     val transfers: List<Transfer> = emptyList(),
     val mentioned: String? = null,
     val replyTarget: ChatMessage? = null,
+    val easytierEnabled: Boolean = false,
+    val easytierIp: String? = null,
+    val easytierError: String? = null,
 ) {
     val hostNick: String
         get() = members.firstOrNull { it.pubkey == host }?.nick ?: "—"

@@ -26,6 +26,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -59,6 +60,7 @@ fun GroupListScreen(
     onCreate: () -> Unit,
     onJoin: () -> Unit,
     onRename: (String, String) -> Unit,
+    onToggleEasytier: (String, Boolean) -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     var renameTarget by remember { mutableStateOf<SavedGroup?>(null) }
@@ -96,7 +98,7 @@ fun GroupListScreen(
                 Spacer(Modifier.height(4.dp))
             } else {
                 Text(
-                    "点击名称进入；右侧按钮可修改本机显示名称。",
+                    "点击名称进入；右侧开关控制此频道的 EasyTier 内网穿透。",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 12.sp,
                 )
@@ -109,6 +111,9 @@ fun GroupListScreen(
                             group = group,
                             onEnter = { onEnter(group.id) },
                             onRename = { renameTarget = group },
+                            onToggleEasytier = { enabled ->
+                                onToggleEasytier(group.id, enabled)
+                            },
                         )
                     }
                 }
@@ -163,7 +168,12 @@ fun GroupListScreen(
 }
 
 @Composable
-private fun GroupRow(group: SavedGroup, onEnter: () -> Unit, onRename: () -> Unit) {
+private fun GroupRow(
+    group: SavedGroup,
+    onEnter: () -> Unit,
+    onRename: () -> Unit,
+    onToggleEasytier: (Boolean) -> Unit,
+) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -191,6 +201,7 @@ private fun GroupRow(group: SavedGroup, onEnter: () -> Unit, onRename: () -> Uni
                     buildString {
                         append("频道 ")
                         append(group.id.take(8))
+                        if (group.easytierEnabled) append(" · EasyTier")
                         if (group.active) append(" · 当前频道")
                         if (group.lastUsed > 0) {
                             append(" · ")
@@ -209,6 +220,11 @@ private fun GroupRow(group: SavedGroup, onEnter: () -> Unit, onRename: () -> Uni
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            Switch(
+                checked = group.easytierEnabled,
+                onCheckedChange = onToggleEasytier,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            )
             IconButton(onClick = onRename) {
                 Icon(Icons.Filled.Edit, contentDescription = "修改名称")
             }

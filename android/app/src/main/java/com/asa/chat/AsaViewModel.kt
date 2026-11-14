@@ -54,6 +54,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                         listen = obj.optString("advertise"),
                         downloads = obj.optString("downloads"),
                         groups = parseGroups(obj.optJSONArray("groups")),
+                        easytierEnabled = obj.optBoolean("easytier_enabled"),
                     )
                 }
             }
@@ -63,6 +64,16 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun dataDir(app: Application): String = File(app.filesDir, "asa").absolutePath
+
+    private fun JSONArray?.toStringList(): List<String> {
+        if (this == null) return emptyList()
+        return buildList {
+            for (index in 0 until length()) {
+                val value = optString(index).trim()
+                if (value.isNotEmpty()) add(value)
+            }
+        }
+    }
 
     private fun parseGroups(array: JSONArray?): List<SavedGroup> {
         if (array == null) return emptyList()
@@ -76,6 +87,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                 name = item.optString("name").ifBlank { "频道 ${id.take(8)}" },
                 lastUsed = item.optLong("last_used"),
                 active = item.optBoolean("active"),
+                easytierEnabled = item.optBoolean("easytier_enabled"),
             )
         }
         return groups
@@ -131,6 +143,36 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    fun toggleEasytier(roomId: String, enabled: Boolean) {
+        if (_state.value.connecting) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val app = getApplication<Application>()
+            val result = runCatching {
+                JSONObject(NativeBridge.setEasytierEnabled(dataDir(app), roomId, enabled))
+            }.getOrNull()
+            if (result?.optBoolean("ok") != true) {
+                _state.update {
+                    it.copy(error = result?.optString("error") ?: "保存 EasyTier 开关失败")
+                }
+                return@launch
+            }
+            reloadGroups(app)
+            // 当前频道需要重启才能应用虚拟 IP / 关闭 ET。
+            if (_state.value.roomId == roomId) {
+                val config = lastConfig ?: ConfigStore.load(app)
+                start(
+                    mode = "chat",
+                    nick = _state.value.nick,
+                    invite = null,
+                    portText = config.port.toString(),
+                    connectText = "",
+                    appConfig = config,
+                    roomId = roomId,
+                )
+            }
+        }
+    }
+
     fun start(
         mode: String,
         nick: String,
@@ -174,14 +216,78 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                 put("connect", JSONArray(connects))
             }.toString()
 
-            val result = runCatching { NativeBridge.start(config) }.getOrElse { error ->
+            var obj = runCatching { JSONObject(NativeBridge.start(config)) }.getOrElse { error ->
                 JSONObject()
                     .put("ok", false)
                     .put("error", error.message ?: "启动失败")
-                    .toString()
             }
-            val obj = runCatching { JSONObject(result) }.getOrNull()
-            if (obj?.optBoolean("ok") == true) {
+            if (obj.optBoolean("ok")) {
+                val etEnabled = obj.optBoolean("easytier_enabled")
+                val etNodes = obj.optJSONArray("et_nodes").toStringList()
+                val etNetwork = obj.optString("et_network")
+                val etSecret = obj.optString("et_secret")
+                val etIpv4 = obj.optString("et_ipv4")
+                var etError: String? = null
+                android.util.Log.i(
+                    "AsaEasyTier",
+                    "native start: enabled=$etEnabled nodes=$etNodes network=${etNetwork.take(10)} ip=$etIpv4",
+                )
+
+                if (!etEnabled) {
+                    // 切到未开启 EasyTier 的频道时，清掉上一个频道的 ET/VPN。
+                    EasyTierController.stop(app)
+                } else if (etNodes.isNotEmpty() && etNetwork.isNotBlank() &&
+                    etSecret.isNotBlank() && etIpv4.isNotBlank()
+                ) {
+                    if (!EasyTierController.ensureVpnPermission(app)) {
+                        etError = EasyTierController.lastError ?: "未获得 VPN 授权"
+                        EasyTierController.stop(app)
+                        android.util.Log.w("AsaEasyTier", "vpn permission failed: $etError")
+                    } else if (!EasyTierController.start(
+                            app,
+                            etNetwork,
+                            etSecret,
+                            "$etIpv4/16",
+                            etNodes,
+                        )
+                    ) {
+                        etError = EasyTierController.lastError ?: "EasyTier 启动失败"
+                        EasyTierController.stop(app)
+                        android.util.Log.w("AsaEasyTier", "controller start failed: $etError")
+                    } else {
+                        // 等 TUN 建立，再用虚拟 IP 重启 ASA 节点。
+                        Thread.sleep(1500)
+                        val restart = JSONObject(config).apply {
+                            put("mode", "chat")
+                            put("room_id", obj.optString("room_id"))
+                            put("advertise", "$etIpv4:$port")
+                            put("et_nodes", JSONArray(etNodes))
+                            remove("invite")
+                        }
+                        val second = runCatching {
+                            JSONObject(NativeBridge.start(restart.toString()))
+                        }.getOrNull()
+                        if (second?.optBoolean("ok") == true) {
+                            obj = second
+                        } else {
+                            etError = second?.optString("error")?.ifBlank { null }
+                                ?: "使用 EasyTier 地址重启频道失败"
+                            EasyTierController.stop(app)
+                            // 第二遍启动失败时，恢复第一遍的局域网节点。
+                            val fallback = runCatching {
+                                JSONObject(NativeBridge.start(config))
+                            }.getOrNull()
+                            if (fallback?.optBoolean("ok") == true) {
+                                obj = fallback
+                            }
+                        }
+                    }
+                } else if (etEnabled) {
+                    etError = "此频道已开启 EasyTier，但没有可用节点"
+                    EasyTierController.stop(app)
+                    android.util.Log.w("AsaEasyTier", etError)
+                }
+
                 ContextCompat.startForegroundService(
                     app,
                     Intent(app, AsaService::class.java),
@@ -205,13 +311,16 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                         transfers = emptyList(),
                         host = null,
                         replyTarget = null,
+                        easytierEnabled = etEnabled,
+                        easytierIp = if (etError == null && etEnabled) etIpv4 else null,
+                        easytierError = etError,
                     )
                 }
             } else {
                 _state.update {
                     it.copy(
                         connecting = false,
-                        error = obj?.optString("error").orEmpty().ifBlank { "启动失败" },
+                        error = obj.optString("error").ifBlank { "启动失败" },
                     )
                 }
             }

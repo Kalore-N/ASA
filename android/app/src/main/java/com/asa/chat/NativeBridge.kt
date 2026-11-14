@@ -18,6 +18,7 @@ object NativeBridge {
     external fun sendCommand(command: String): String
     external fun groups(dataDir: String): String
     external fun renameGroup(dataDir: String, roomId: String, name: String): String
+    external fun setEasytierEnabled(dataDir: String, roomId: String, enabled: Boolean): String
     external fun isRunning(): Boolean
     external fun status(): String
     external fun stop()

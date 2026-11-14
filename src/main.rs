@@ -8,6 +8,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 
 use asa::config::{Config, GroupProfile};
+use asa::easytier::{self, EtProcess, EtStatus};
 use asa::node::{Node, NodeConfig};
 use asa::paths::{self, RuntimeDirs};
 use asa::room::{self, RoomConfig};
@@ -448,7 +449,47 @@ fn run_chat(
         let bind: SocketAddr = format!("0.0.0.0:{}", opts.port())
             .parse()
             .context("监听地址无效")?;
-        let advertise = Some(SocketAddr::new(util::lan_ipv4(), opts.port()));
+        let mut advertise = Some(SocketAddr::new(util::lan_ipv4(), opts.port()));
+
+        let mut et_status = EtStatus::default();
+        let mut et_process = None;
+        let mut selected_nodes: Vec<String> = Vec::new();
+        let mut extra_entries: Vec<String> = Vec::new();
+
+        if profile.easytier_enabled.unwrap_or(false) {
+            let mut nodes = room.et_nodes.clone();
+            if nodes.is_empty() {
+                nodes = config.easytier.nodes.clone();
+            }
+            for node in nodes {
+                if let Ok(node) = easytier::normalize_node(&node) {
+                    if !selected_nodes.contains(&node) {
+                        selected_nodes.push(node);
+                    }
+                }
+            }
+            if selected_nodes.is_empty() {
+                et_status.error = Some("已开启 EasyTier，但没有可用节点；请先添加节点".to_string());
+            } else {
+                match EtProcess::start(&dirs, &room, &pubkey, &selected_nodes) {
+                    Ok(process) => {
+                        advertise = Some(SocketAddr::new(process.ip.into(), opts.port()));
+                        et_status.running = true;
+                        et_status.ip = Some(process.ip);
+                        // 邀请码同时保留局域网入口，ET 不可用时仍可回退。
+                        extra_entries.push(format!("{}:{}", util::lan_ipv4(), opts.port()));
+                        room.et_nodes = selected_nodes.clone();
+                        let _ = asa::rooms::save(&dirs, &room);
+                        et_process = Some(process);
+                    }
+                    Err(err) => {
+                        // 回退到局域网/中继，不阻塞进入频道。
+                        et_status.error = Some(err.to_string());
+                    }
+                }
+            }
+        }
+        et_status.nodes = selected_nodes.clone();
 
         let cfg = NodeConfig {
             signing: identity.signing.clone(),
@@ -461,6 +502,12 @@ fn run_chat(
             self_since,
             bind,
             advertise,
+            extra_entries,
+            invite_et_nodes: if et_status.running {
+                selected_nodes.clone()
+            } else {
+                Vec::new()
+            },
             dirs: dirs.clone(),
             identity_path: dirs.identity_path(),
             downloads,
@@ -486,9 +533,14 @@ fn run_chat(
             room_name: profile.name.clone(),
             group_path: asa::config::group_path(&dirs, &room.id),
             groups: asa::rooms::list(&dirs).unwrap_or_default(),
+            easytier: et_status,
+            config_nodes: config.easytier.nodes.clone(),
+            dirs: dirs.clone(),
         };
         let action = tui::run(handle, ui);
         runtime.shutdown_timeout(Duration::from_secs(2));
+        // 切换频道前先停止 EasyTier，避免虚拟网卡残留。
+        drop(et_process);
         match action? {
             TuiAction::Quit => break,
             TuiAction::Switch(room_id) => {
