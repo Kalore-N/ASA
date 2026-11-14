@@ -42,7 +42,14 @@ data class Transfer(
     val outgoing: Boolean,
 )
 
-enum class Screen { Connect, Chat }
+data class SavedGroup(
+    val id: String,
+    val name: String,
+    val lastUsed: Long,
+    val active: Boolean,
+)
+
+enum class Screen { Connect, Groups, Chat }
 
 data class UiState(
     val screen: Screen = Screen.Connect,
@@ -53,6 +60,7 @@ data class UiState(
     val me: String = "",
     val roomId: String = "",
     val roomName: String = "",
+    val groups: List<SavedGroup> = emptyList(),
     val invite: String = "",
     val listen: String = "",
     val downloads: String = "",

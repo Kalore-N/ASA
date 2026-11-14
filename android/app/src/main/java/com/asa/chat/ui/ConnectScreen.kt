@@ -54,10 +54,12 @@ private val FieldShape = RoundedCornerShape(6.dp)
 fun ConnectScreen(
     state: UiState,
     initialPort: Int,
+    initialMode: String = "create",
     onStart: (mode: String, nick: String, invite: String?, port: String, connect: String) -> Unit,
+    onOpenGroups: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
-    var mode by rememberSaveable { mutableStateOf("create") }
+    var mode by rememberSaveable { mutableStateOf(if (initialMode == "join") "join" else "create") }
     var nick by rememberSaveable { mutableStateOf(state.nick) }
     var port by rememberSaveable { mutableStateOf(initialPort.toString()) }
     var invite by rememberSaveable { mutableStateOf("") }
@@ -112,11 +114,19 @@ fun ConnectScreen(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             ModeButton("创建群", mode == "create") { mode = "create" }
             ModeButton("加入群", mode == "join") { mode = "join" }
-            ModeButton("继续上次", mode == "chat") { mode = "chat" }
+            OutlinedButton(
+                onClick = onOpenGroups,
+                shape = FieldShape,
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    horizontal = 14.dp,
+                    vertical = 8.dp,
+                ),
+            ) {
+                Text("群聊列表", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+            }
         }
 
-        if (mode != "chat") {
-            OutlinedTextField(
+        OutlinedTextField(
                 value = nick,
                 onValueChange = { nick = it },
                 modifier = Modifier.fillMaxWidth(),
@@ -125,7 +135,6 @@ fun ConnectScreen(
                 singleLine = true,
                 shape = FieldShape,
             )
-        }
 
         if (mode == "join") {
             OutlinedTextField(
@@ -198,11 +207,7 @@ fun ConnectScreen(
                 )
             } else {
                 Text(
-                    when (mode) {
-                        "join" -> "加入群聊"
-                        "chat" -> "继续上次的群"
-                        else -> "创建群聊"
-                    },
+                    if (mode == "join") "加入群聊" else "创建群聊",
                     fontWeight = FontWeight.SemiBold,
                 )
             }

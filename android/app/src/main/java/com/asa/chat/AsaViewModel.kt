@@ -36,8 +36,10 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private var nextKey = 0L
+    private var lastConfig: AppConfig? = null
 
     init {
+        val app = getApplication<Application>()
         if (runCatching { NativeBridge.isRunning() }.getOrDefault(false)) {
             runCatching {
                 val obj = JSONObject(NativeBridge.status())
@@ -51,10 +53,76 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                         invite = obj.optString("invite"),
                         listen = obj.optString("advertise"),
                         downloads = obj.optString("downloads"),
+                        groups = parseGroups(obj.optJSONArray("groups")),
                     )
                 }
             }
+        } else {
+            reloadGroups(app, updateScreen = true)
         }
+    }
+
+    private fun dataDir(app: Application): String = File(app.filesDir, "asa").absolutePath
+
+    private fun parseGroups(array: JSONArray?): List<SavedGroup> {
+        if (array == null) return emptyList()
+        val groups = mutableListOf<SavedGroup>()
+        for (index in 0 until array.length()) {
+            val item = array.optJSONObject(index) ?: continue
+            val id = item.optString("id")
+            if (id.isBlank()) continue
+            groups += SavedGroup(
+                id = id,
+                name = item.optString("name").ifBlank { "群 ${id.take(8)}" },
+                lastUsed = item.optLong("last_used"),
+                active = item.optBoolean("active"),
+            )
+        }
+        return groups
+    }
+
+    private fun reloadGroups(app: Application, updateScreen: Boolean = false) {
+        val groups = runCatching {
+            val result = JSONObject(NativeBridge.groups(dataDir(app)))
+            parseGroups(result.optJSONArray("groups"))
+        }.getOrDefault(emptyList())
+        _state.update { current ->
+            current.copy(
+                groups = groups,
+                screen = if (updateScreen && current.screen == Screen.Connect) {
+                    if (groups.isEmpty()) Screen.Connect else Screen.Groups
+                } else {
+                    current.screen
+                },
+            )
+        }
+    }
+
+    fun refreshGroups() {
+        reloadGroups(getApplication())
+    }
+
+    fun showConnect() {
+        _state.update { it.copy(screen = Screen.Connect) }
+    }
+
+    fun showGroups() {
+        _state.update { it.copy(screen = Screen.Groups) }
+        refreshGroups()
+    }
+
+    fun enterGroup(roomId: String) {
+        val app = getApplication<Application>()
+        val config = lastConfig ?: ConfigStore.load(app)
+        start(
+            mode = "chat",
+            nick = _state.value.nick,
+            invite = null,
+            portText = config.port.toString(),
+            connectText = "",
+            appConfig = config,
+            roomId = roomId,
+        )
     }
 
     fun start(
@@ -64,6 +132,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
         portText: String,
         connectText: String,
         appConfig: AppConfig,
+        roomId: String? = null,
     ) {
         if (_state.value.connecting) return
         _state.update { it.copy(connecting = true, error = null, info = null) }
@@ -72,7 +141,9 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
             val dataDir = File(app.filesDir, "asa")
             val port = portText.trim().toIntOrNull()?.takeIf { it in 1024..65535 }
                 ?: appConfig.port
-            ConfigStore.save(app, appConfig.copy(port = port))
+            val savedConfig = appConfig.copy(port = port)
+            lastConfig = savedConfig
+            ConfigStore.save(app, savedConfig)
             val connects = connectText
                 .split(',', '\n')
                 .map { it.trim() }
@@ -93,6 +164,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                     put("relays", JSONArray(appConfig.relays))
                 }
                 if (!invite.isNullOrBlank()) put("invite", invite.trim())
+                if (!roomId.isNullOrBlank()) put("room_id", roomId)
                 put("connect", JSONArray(connects))
             }.toString()
 
@@ -120,6 +192,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                         invite = obj.optString("invite"),
                         listen = obj.optString("advertise"),
                         downloads = obj.optString("downloads"),
+                        groups = parseGroups(obj.optJSONArray("groups")),
                         messages = emptyList(),
                         members = emptyList(),
                         offers = emptyList(),
@@ -177,7 +250,14 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
         if (trimmed.isEmpty()) return
         val command = JSONObject().put("cmd", "set_room_name").put("name", trimmed)
         NativeBridge.sendCommand(command.toString())
-        _state.update { it.copy(roomName = trimmed) }
+        _state.update { current ->
+            current.copy(
+                roomName = trimmed,
+                groups = current.groups.map { group ->
+                    if (group.id == current.roomId) group.copy(name = trimmed) else group
+                },
+            )
+        }
     }
 
     fun setNick(nick: String) {
@@ -251,14 +331,49 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
         val app = getApplication<Application>()
         app.stopService(Intent(app, AsaService::class.java))
         runCatching { NativeBridge.stop() }
+        val groups = _state.value.groups
         _state.update {
             UiState(
-                screen = Screen.Connect,
+                screen = if (groups.isEmpty()) Screen.Connect else Screen.Groups,
                 nick = it.nick,
+                groups = groups,
                 error = null,
                 info = "已退出群聊",
             )
         }
+        reloadGroups(app)
+    }
+
+    fun switchToGroups() {
+        val app = getApplication<Application>()
+        app.stopService(Intent(app, AsaService::class.java))
+        runCatching { NativeBridge.stop() }
+        _state.update {
+            it.copy(
+                screen = Screen.Groups,
+                messages = emptyList(),
+                members = emptyList(),
+                offers = emptyList(),
+                transfers = emptyList(),
+                roomId = "",
+                roomName = "",
+                replyTarget = null,
+            )
+        }
+        reloadGroups(app)
+    }
+
+    fun renameGroup(roomId: String, name: String) {
+        val app = getApplication<Application>()
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return
+        runCatching {
+            JSONObject(NativeBridge.renameGroup(dataDir(app), roomId, trimmed))
+        }
+        if (_state.value.roomId == roomId) {
+            _state.update { it.copy(roomName = trimmed) }
+        }
+        reloadGroups(app)
     }
 
     fun clearError() = _state.update { it.copy(error = null) }

@@ -6,13 +6,12 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=asa
-ExecStart=/opt/asa/asa relay serve 9000 /var/lib/asa/relay-state.json
+ExecStart=/opt/asa/asa relay serve 9000
 Restart=always
 RestartSec=3
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/asa
 
 [Install]
 WantedBy=multi-user.target

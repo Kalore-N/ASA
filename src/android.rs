@@ -53,6 +53,8 @@ struct StartConfig {
     auto_accept: Option<bool>,
     #[serde(default)]
     relays: Vec<String>,
+    #[serde(default)]
+    room_id: Option<String>,
 }
 
 fn default_mode() -> String {
@@ -82,6 +84,7 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
     }
     let root = PathBuf::from(&cfg.data_dir);
     let dirs = RuntimeDirs::ensure(&root)?;
+    crate::rooms::migrate(&dirs)?;
     let config = Config::ensure(&dirs)?;
     let (identity, saved_nick) = Identity::load_or_create(&dirs.identity_path())?;
 
@@ -95,14 +98,12 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
 
     let mut invite_addresses: Vec<String> = Vec::new();
     let room = match cfg.mode.as_str() {
-        "create" => match RoomConfig::load(&dirs.room_path())? {
-            Some(room) => room,
-            None => {
-                let room = RoomConfig::create(&identity);
-                room.save(&dirs.room_path())?;
-                room
-            }
-        },
+        "create" => {
+            // Android 的「创建群聊」每次都生成新群，不再复用旧 room.json。
+            let room = RoomConfig::create(&identity);
+            crate::rooms::save(&dirs, &room)?;
+            room
+        }
         "join" => {
             let text = cfg
                 .invite
@@ -110,25 +111,36 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
                 .ok_or_else(|| anyhow!("加入群需要邀请码"))?;
             let (parsed, addresses) = RoomConfig::parse_invite_full(text)?;
             invite_addresses = addresses;
-            let room = match RoomConfig::load(&dirs.room_path())? {
-                Some(mut existing) if existing.id == parsed.id => {
+            let room = match crate::rooms::load(&dirs, &parsed.id)? {
+                Some(mut existing) => {
                     for entry in &parsed.entries {
                         if !existing.entries.iter().any(|e| e == entry) {
                             existing.entries.push(entry.clone());
                         }
                     }
-                    existing.save(&dirs.room_path())?;
+                    for relay in &parsed.relays {
+                        if !existing.relays.iter().any(|r| r == relay) {
+                            existing.relays.push(relay.clone());
+                        }
+                    }
+                    crate::rooms::save(&dirs, &existing)?;
                     existing
                 }
-                _ => {
-                    parsed.save(&dirs.room_path())?;
+                None => {
+                    crate::rooms::save(&dirs, &parsed)?;
                     parsed
                 }
             };
             room
         }
-        "chat" => RoomConfig::load(&dirs.room_path())?
-            .ok_or_else(|| anyhow!("还没有群，请先创建或加入"))?,
+        "chat" => match cfg.room_id.as_deref() {
+            Some(id) => {
+                crate::rooms::load(&dirs, id)?.ok_or_else(|| anyhow!("找不到本地群: {id}"))?
+            }
+            None => {
+                crate::rooms::active(&dirs)?.ok_or_else(|| anyhow!("还没有群，请先创建或加入"))?
+            }
+        },
         other => return Err(anyhow!("未知模式: {other}")),
     };
 
@@ -231,9 +243,11 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
         .build()
         .context("创建异步运行时失败")?;
     let handle = runtime.block_on(Node::start(node_cfg))?;
+    let groups = crate::rooms::list(&dirs).unwrap_or_default();
     let info = json!({
         "ok": true,
         "room_id": handle.room_id,
+        "groups": groups,
         "peer_id": handle.peer_id,
         "pubkey": handle.pubkey,
         "listen": handle.listen.to_string(),
@@ -484,6 +498,62 @@ pub extern "system" fn Java_com_asa_chat_NativeBridge_sendCommand<'local>(
         Err(err) => fail(err),
     };
     to_jstring(&mut env, result)
+}
+
+fn groups_json(data_dir: &str) -> String {
+    let root = PathBuf::from(data_dir);
+    match RuntimeDirs::ensure(&root)
+        .and_then(|dirs| crate::rooms::migrate(&dirs))
+        .and_then(|_| RuntimeDirs::ensure(&root))
+        .and_then(|dirs| crate::rooms::list(&dirs))
+    {
+        Ok(groups) => json!({ "ok": true, "groups": groups }).to_string(),
+        Err(err) => fail(err),
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_asa_chat_NativeBridge_groups<'local>(
+    mut env: jni::JNIEnv<'local>,
+    _this: jni::objects::JObject<'local>,
+    data_dir: jni::objects::JString<'local>,
+) -> jni::sys::jstring {
+    let result = match read_string(&mut env, &data_dir) {
+        Ok(dir) => groups_json(&dir),
+        Err(err) => fail(err),
+    };
+    to_jstring(&mut env, result)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_asa_chat_NativeBridge_renameGroup<'local>(
+    mut env: jni::JNIEnv<'local>,
+    _this: jni::objects::JObject<'local>,
+    data_dir: jni::objects::JString<'local>,
+    room_id: jni::objects::JString<'local>,
+    name: jni::objects::JString<'local>,
+) -> jni::sys::jstring {
+    let result = (|| -> Result<serde_json::Value> {
+        let root = PathBuf::from(read_string(&mut env, &data_dir)?);
+        let room_id = read_string(&mut env, &room_id)?;
+        let name = read_string(&mut env, &name)?;
+        let name: String = crate::util::sanitize_text(&name).chars().take(40).collect();
+        if name.is_empty() {
+            return Err(anyhow!("群名称不能为空"));
+        }
+        let dirs = RuntimeDirs::ensure(&root)?;
+        let mut profile = GroupProfile::load(&dirs, &room_id)?;
+        profile.name = Some(name);
+        profile.save(&dirs, &room_id)?;
+        Ok(json!({ "ok": true }))
+    })();
+    to_jstring(
+        &mut env,
+        match result {
+            Ok(value) => value.to_string(),
+            Err(err) => fail(err),
+        },
+    )
 }
 
 #[no_mangle]

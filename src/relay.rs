@@ -450,11 +450,6 @@ pub fn spawn_client(
             if !keep_going {
                 break;
             }
-            let _ = events
-                .send(NetEvent::Notice(format!(
-                    "中继连接断开，5 秒后重试: {relay}"
-                )))
-                .await;
             match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
                 Ok(Some(RelayCmd::Stop)) | Ok(None) => break,
                 _ => {}

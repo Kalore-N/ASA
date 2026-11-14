@@ -16,6 +16,8 @@ object NativeBridge {
     external fun start(config: String): String
     external fun pollEvents(): String
     external fun sendCommand(command: String): String
+    external fun groups(dataDir: String): String
+    external fun renameGroup(dataDir: String, roomId: String, name: String): String
     external fun isRunning(): Boolean
     external fun status(): String
     external fun stop()

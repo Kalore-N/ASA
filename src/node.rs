@@ -270,11 +270,12 @@ impl Node {
 
         tokio::spawn(net::accept_loop(listener, ctx.clone(), net_tx.clone()));
 
-        let mut relay_tx = None;
-        if let Some(text) = cfg.relays.first() {
+        // 同时连接多个中继：任何一个可用即可发现节点，避免单个中继成为中心。
+        let mut relay_tx = Vec::new();
+        for text in cfg.relays.iter().take(8) {
             match crate::room::resolve_addr(text) {
                 Ok(addr) => {
-                    relay_tx = Some(relay::spawn_client(
+                    relay_tx.push(relay::spawn_client(
                         addr,
                         cfg.room_id.clone(),
                         cfg.pubkey.clone(),
@@ -314,7 +315,7 @@ impl Node {
 
         let mut room = RoomConfig::from_key(cfg.room_key, cfg.room_created, cfg.creator.clone());
         // 群入口持久化在 room.json 中；启动时自动尝试所有已知入口。
-        if let Ok(Some(saved)) = RoomConfig::load(&cfg.dirs.room_path()) {
+        if let Ok(Some(saved)) = crate::rooms::load(&cfg.dirs, &cfg.room_id) {
             if saved.id == room.id {
                 room.entries = saved.entries;
                 room.relays = saved.relays;
@@ -417,7 +418,7 @@ struct NodeState {
     last_members: Instant,
     last_reconnect: Instant,
     discovery: Option<Discovery>,
-    relay_tx: Option<mpsc::Sender<RelayCmd>>,
+    relay_tx: Vec<mpsc::Sender<RelayCmd>>,
     relay_tried: HashMap<String, Instant>,
 }
 
@@ -564,7 +565,7 @@ impl NodeState {
             }
             Cmd::Notice(text) => self.info(text),
             Cmd::Quit => {
-                if let Some(tx) = &self.relay_tx {
+                for tx in &self.relay_tx {
                     let _ = tx.try_send(RelayCmd::Stop);
                 }
                 return false;
@@ -702,9 +703,9 @@ impl NodeState {
                 let _ = reason;
             }
             NetEvent::RelayPeers(peers) => {
-                let Some(tx) = self.relay_tx.clone() else {
+                if self.relay_tx.is_empty() {
                     return;
-                };
+                }
                 let now = Instant::now();
                 for peer in peers {
                     if peer.pubkey == self.ctx.pubkey || self.peers.contains_key(&peer.pubkey) {
@@ -719,7 +720,10 @@ impl NodeState {
                         continue;
                     }
                     self.relay_tried.insert(peer.pubkey.clone(), now);
-                    let _ = tx.try_send(RelayCmd::Connect(peer.pubkey));
+                    // 同时向所有中继发起连接；哪个可用就用哪个。
+                    for tx in &self.relay_tx {
+                        let _ = tx.try_send(RelayCmd::Connect(peer.pubkey.clone()));
+                    }
                 }
             }
             NetEvent::Notice(text) => {

@@ -18,6 +18,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.asa.chat.ui.AsaTheme
 import com.asa.chat.ui.ChatScreen
 import com.asa.chat.ui.ConnectScreen
+import com.asa.chat.ui.GroupListScreen
 import com.asa.chat.ui.SettingsScreen
 
 class MainActivity : ComponentActivity() {
@@ -47,6 +48,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             var config by remember { mutableStateOf(ConfigStore.load(activity)) }
             var showSettings by remember { mutableStateOf(false) }
+            var connectMode by remember { mutableStateOf("create") }
 
             AsaTheme(theme = config.theme, fontSize = config.fontSize) {
                 val vm: AsaViewModel = viewModel()
@@ -56,6 +58,9 @@ class MainActivity : ComponentActivity() {
                 BackHandler(enabled = !showSettings && state.screen == Screen.Chat) {
                     // 按返回键只把应用切到后台；只有菜单里的「退出群聊」才会停止连接。
                     moveTaskToBack(true)
+                }
+                BackHandler(enabled = !showSettings && state.screen == Screen.Groups) {
+                    vm.showConnect()
                 }
 
                 if (showSettings) {
@@ -74,9 +79,25 @@ class MainActivity : ComponentActivity() {
                         Screen.Connect -> ConnectScreen(
                             state = state,
                             initialPort = config.port,
+                            initialMode = connectMode,
                             onStart = { mode, nick, invite, port, connect ->
                                 vm.start(mode, nick, invite, port, connect, config)
                             },
+                            onOpenGroups = { vm.showGroups() },
+                            onOpenSettings = { showSettings = true },
+                        )
+                        Screen.Groups -> GroupListScreen(
+                            state = state,
+                            onEnter = { roomId -> vm.enterGroup(roomId) },
+                            onCreate = {
+                                connectMode = "create"
+                                vm.showConnect()
+                            },
+                            onJoin = {
+                                connectMode = "join"
+                                vm.showConnect()
+                            },
+                            onRename = { roomId, name -> vm.renameGroup(roomId, name) },
                             onOpenSettings = { showSettings = true },
                         )
                         Screen.Chat -> ChatScreen(

@@ -22,6 +22,7 @@ ASA · 去中心化 TUI 群聊
   asa init [--name 昵称] [--port 7777]     创建本地身份与群，打印邀请码
   asa join <邀请码> [--name 昵称]          用邀请码加入群
   asa chat [选项]                          启动聊天（默认命令）
+  asa groups                               列出本地保存的群
   asa invite [--port 7777]                 打印当前群的邀请码
   asa entry add|remove <地址>              维护群入口地址
   asa entry list                           列出入口地址与长期邀请码
@@ -40,6 +41,7 @@ ASA · 去中心化 TUI 群聊
   --data-dir <路径>    数据目录，默认 ~/Documents/ASA
   --max-file-mb <MB>   单文件上限，默认 100，0 表示不限制
   --auto-accept        自动接受所有文件请求（有风险，慎用）
+  --room <群ID>        指定要进入的本地群（默认最近使用）
 
 进入聊天后输入 /help 查看命令。
 ";
@@ -55,6 +57,7 @@ struct Opts {
     data_root: Option<PathBuf>,
     max_file_mb: Option<u64>,
     auto_accept: bool,
+    room: Option<String>,
     args: Vec<String>,
 }
 
@@ -102,6 +105,7 @@ fn real_main() -> Result<()> {
     if !opts.no_mdns {
         opts.no_mdns = !config.network.mdns;
     }
+    asa::rooms::migrate(&dirs)?;
     let port = opts.port();
     let _ = Settings { port: Some(port) }.save(&dirs.settings_path());
     if config.network.port != Some(port) {
@@ -114,16 +118,12 @@ fn real_main() -> Result<()> {
             let (identity, _) = Identity::load_or_create(&dirs.identity_path())?;
             let nick = opts.name.clone().unwrap_or_else(|| default_nick(&identity));
             identity.save(&dirs.identity_path(), &nick)?;
-            let mut room = match RoomConfig::load(&dirs.room_path())? {
+            let mut room = match asa::rooms::active(&dirs)? {
                 Some(room) => room,
-                None => {
-                    let room = RoomConfig::create(&identity);
-                    room.save(&dirs.room_path())?;
-                    room
-                }
+                None => RoomConfig::create(&identity),
             };
             merge_relays(&mut room, &config);
-            room.save(&dirs.room_path())?;
+            asa::rooms::save(&dirs, &room)?;
             let addr = SocketAddr::new(util::lan_ipv4(), opts.port());
             if let Ok(mut profile) = GroupProfile::load(&dirs, &room.id) {
                 if profile.nick.is_none() {
@@ -144,16 +144,14 @@ fn real_main() -> Result<()> {
             Ok(())
         }
         "invite" => {
-            let mut room = RoomConfig::load(&dirs.room_path())?
-                .ok_or_else(|| anyhow!("还没有群，请先运行 asa init"))?;
+            let mut room = load_room(&dirs, &opts)?;
             merge_relays(&mut room, &config);
             let addr = SocketAddr::new(util::lan_ipv4(), opts.port());
             println!("{}", room.invite(Some(addr)));
             Ok(())
         }
         "entry" => {
-            let mut room = RoomConfig::load(&dirs.room_path())?
-                .ok_or_else(|| anyhow!("还没有群，请先运行 asa init 或 asa join"))?;
+            let mut room = load_room(&dirs, &opts)?;
             let action = opts.args.first().map(String::as_str).unwrap_or("list");
             match action {
                 "add" => {
@@ -164,7 +162,7 @@ fn real_main() -> Result<()> {
                     if !room.entries.iter().any(|entry| entry == value) {
                         room.entries.push(value.clone());
                     }
-                    room.save(&dirs.room_path())?;
+                    asa::rooms::save(&dirs, &room)?;
                     println!("已添加入口: {value}");
                 }
                 "remove" | "rm" => {
@@ -174,7 +172,7 @@ fn real_main() -> Result<()> {
                         .ok_or_else(|| anyhow!("用法: asa entry remove <地址>"))?;
                     let before = room.entries.len();
                     room.entries.retain(|entry| entry != value);
-                    room.save(&dirs.room_path())?;
+                    asa::rooms::save(&dirs, &room)?;
                     println!(
                         "已移除 {} 个入口",
                         before.saturating_sub(room.entries.len())
@@ -211,11 +209,7 @@ fn real_main() -> Result<()> {
                         .get(1)
                         .and_then(|value| value.parse::<u16>().ok())
                         .unwrap_or(9000);
-                    let state = opts
-                        .args
-                        .get(2)
-                        .map(PathBuf::from)
-                        .unwrap_or_else(|| dirs.root.join("relay-state.json"));
+                    let state = opts.args.get(2).map(PathBuf::from);
                     let bind: SocketAddr = format!("0.0.0.0:{port}")
                         .parse()
                         .context("中继监听地址无效")?;
@@ -224,12 +218,11 @@ fn real_main() -> Result<()> {
                         .thread_name("asa-relay")
                         .build()
                         .context("创建中继运行时失败")?;
-                    runtime.block_on(asa::relay::run_relay(bind, Some(state)))?;
+                    runtime.block_on(asa::relay::run_relay(bind, state))?;
                     Ok(())
                 }
                 "add" | "remove" | "rm" | "list" | "" => {
-                    let mut room = RoomConfig::load(&dirs.room_path())?
-                        .ok_or_else(|| anyhow!("还没有群，请先运行 asa init 或 asa join"))?;
+                    let mut room = load_room(&dirs, &opts)?;
                     merge_relays(&mut room, &config);
                     match action {
                         "add" => {
@@ -240,7 +233,7 @@ fn real_main() -> Result<()> {
                             if !room.relays.iter().any(|item| item == value) {
                                 room.relays.push(value.clone());
                             }
-                            room.save(&dirs.room_path())?;
+                            asa::rooms::save(&dirs, &room)?;
                             if !config.network.relays.iter().any(|item| item == value) {
                                 config.network.relays.push(value.clone());
                             }
@@ -254,7 +247,7 @@ fn real_main() -> Result<()> {
                                 .ok_or_else(|| anyhow!("用法: asa relay remove <地址>"))?;
                             let before = room.relays.len();
                             room.relays.retain(|item| item != value);
-                            room.save(&dirs.room_path())?;
+                            asa::rooms::save(&dirs, &room)?;
                             config.network.relays.retain(|item| item != value);
                             config.save(&asa::config::config_path(&dirs))?;
                             println!("已移除 {} 个中继", before.saturating_sub(room.relays.len()));
@@ -284,8 +277,7 @@ fn real_main() -> Result<()> {
                 .args
                 .first()
                 .ok_or_else(|| anyhow!("用法: asa export <文件>"))?;
-            let mut room = RoomConfig::load(&dirs.room_path())?
-                .ok_or_else(|| anyhow!("还没有群，请先运行 asa init 或 asa join"))?;
+            let mut room = load_room(&dirs, &opts)?;
             merge_relays(&mut room, &config);
             room.save(PathBuf::from(path).as_path())?;
             println!("已导出群文件: {path}");
@@ -299,7 +291,7 @@ fn real_main() -> Result<()> {
                 .ok_or_else(|| anyhow!("用法: asa import <文件>"))?;
             let room = RoomConfig::load(PathBuf::from(path).as_path())?
                 .ok_or_else(|| anyhow!("群文件不存在或格式不正确: {path}"))?;
-            room.save(&dirs.room_path())?;
+            asa::rooms::save(&dirs, &room)?;
             println!("已导入群 {}（{}）", room.short_id(), room.id);
             println!("入口数量: {}", room.entries.len());
             println!("运行 asa 启动聊天。");
@@ -311,18 +303,23 @@ fn real_main() -> Result<()> {
                 .clone()
                 .ok_or_else(|| anyhow!("用法: asa join <邀请码>"))?;
             let (parsed, addresses) = RoomConfig::parse_invite_full(&text)?;
-            let room = match RoomConfig::load(&dirs.room_path())? {
-                Some(mut existing) if existing.id == parsed.id => {
+            let room = match asa::rooms::load(&dirs, &parsed.id)? {
+                Some(mut existing) => {
                     for entry in &parsed.entries {
                         if !existing.entries.iter().any(|e| e == entry) {
                             existing.entries.push(entry.clone());
                         }
                     }
-                    existing.save(&dirs.room_path())?;
+                    for relay in &parsed.relays {
+                        if !existing.relays.iter().any(|r| r == relay) {
+                            existing.relays.push(relay.clone());
+                        }
+                    }
+                    asa::rooms::save(&dirs, &existing)?;
                     existing
                 }
-                _ => {
-                    parsed.save(&dirs.room_path())?;
+                None => {
+                    asa::rooms::save(&dirs, &parsed)?;
                     parsed
                 }
             };
@@ -346,9 +343,24 @@ fn real_main() -> Result<()> {
             }
             run_chat(dirs, identity, nick, room, &opts, &config, bootstrap)
         }
+        "groups" => {
+            let groups = asa::rooms::list(&dirs)?;
+            if groups.is_empty() {
+                println!("还没有保存的群。先用 asa init 或 asa join 加入。");
+            } else {
+                for group in groups {
+                    println!(
+                        "{} {}  {}",
+                        if group.active { "*" } else { " " },
+                        group.name,
+                        group.id
+                    );
+                }
+            }
+            Ok(())
+        }
         "chat" => {
-            let room = RoomConfig::load(&dirs.room_path())?
-                .ok_or_else(|| anyhow!("还没有群。请先运行 asa init 或 asa join <邀请码>"))?;
+            let room = load_room(&dirs, &opts)?;
             let (identity, saved_nick) = Identity::load_or_create(&dirs.identity_path())?;
             let nick = opts
                 .name
@@ -360,6 +372,14 @@ fn real_main() -> Result<()> {
             run_chat(dirs, identity, nick, room, &opts, &config, bootstrap)
         }
         other => bail!("未知命令: {other}\n\n{USAGE}"),
+    }
+}
+
+fn load_room(dirs: &RuntimeDirs, opts: &Opts) -> Result<RoomConfig> {
+    match opts.room.as_deref() {
+        Some(id) => asa::rooms::load(dirs, id)?.ok_or_else(|| anyhow!("找不到本地群: {id}")),
+        None => asa::rooms::active(dirs)?
+            .ok_or_else(|| anyhow!("还没有群。先用 asa init 创建，或 asa join 加入")),
     }
 }
 
@@ -537,6 +557,7 @@ fn parse_args(args: Vec<String>) -> Result<Opts> {
             }
             "--no-mdns" => opts.no_mdns = true,
             "--auto-accept" => opts.auto_accept = true,
+            "--room" | "-r" => opts.room = Some(value("--room")?),
             other if other.starts_with('-') => bail!("未知选项: {other}\n\n{USAGE}"),
             positional => {
                 if opts.command.is_none() {

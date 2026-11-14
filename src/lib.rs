@@ -14,6 +14,7 @@ pub mod paths;
 pub mod proto;
 pub mod relay;
 pub mod room;
+pub mod rooms;
 pub mod settings;
 pub mod tui;
 pub mod util;

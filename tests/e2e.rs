@@ -560,7 +560,7 @@ async fn start_node_relay(
     identity: Identity,
     room: &RoomConfig,
     self_since: u64,
-    relay: String,
+    relays: Vec<String>,
 ) -> (NodeHandle, RuntimeDirs) {
     let dirs = RuntimeDirs::ensure(root).unwrap();
     let cfg = NodeConfig {
@@ -581,7 +581,7 @@ async fn start_node_relay(
         auto_accept: false,
         mdns: false,
         bootstrap: Vec::new(),
-        relays: vec![relay],
+        relays,
     };
     let handle = Node::start(cfg).await.unwrap();
     (handle, dirs)
@@ -595,7 +595,18 @@ async fn relay_connects_two_nodes_without_direct_address() {
     tokio::spawn(async move {
         let _ = asa::relay::run_relay(relay_addr, None).await;
     });
+    let probe2 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let relay2_addr = probe2.local_addr().unwrap();
+    drop(probe2);
+    tokio::spawn(async move {
+        let _ = asa::relay::run_relay(relay2_addr, None).await;
+    });
     tokio::time::sleep(Duration::from_millis(200)).await;
+    let relays = vec![
+        relay_addr.to_string(),
+        relay2_addr.to_string(),
+        "127.0.0.1:1".to_string(),
+    ];
 
     let root_a = unique_root("relay-a");
     let root_b = unique_root("relay-b");
@@ -609,7 +620,7 @@ async fn relay_connects_two_nodes_without_direct_address() {
         identity_a.clone(),
         &room,
         room.created_at,
-        relay_addr.to_string(),
+        relays.clone(),
     )
     .await;
     let (node_b, _dirs_b) = start_node_relay(
@@ -618,7 +629,7 @@ async fn relay_connects_two_nodes_without_direct_address() {
         identity_b.clone(),
         &room,
         asa::util::now_ms(),
-        relay_addr.to_string(),
+        relays,
     )
     .await;
 

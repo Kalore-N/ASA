@@ -3,11 +3,9 @@
 #   docker build -f deploy/Dockerfile -t asa-relay .
 FROM alpine:3.20
 
-RUN mkdir -p /data
 COPY dist/asa /usr/local/bin/asa
 RUN chmod +x /usr/local/bin/asa
 
-VOLUME ["/data"]
 EXPOSE 9000
 
-ENTRYPOINT ["/usr/local/bin/asa", "relay", "serve", "9000", "/data/relay-state.json"]
+ENTRYPOINT ["/usr/local/bin/asa", "relay", "serve", "9000"]

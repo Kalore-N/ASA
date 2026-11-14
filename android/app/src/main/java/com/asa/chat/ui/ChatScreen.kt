@@ -225,6 +225,13 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
                                 },
                             )
                             DropdownMenuItem(
+                                text = { Text("切换群聊") },
+                                onClick = {
+                                    showMenu = false
+                                    vm.switchToGroups()
+                                },
+                            )
+                            DropdownMenuItem(
                                 text = { Text("设置") },
                                 onClick = {
                                     showMenu = false
