@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ASA
+GenericName=Decentralized Chat
+Comment=去中心化 TUI 群聊
+Exec=asa
+Icon=asa
+Terminal=true
+Categories=Network;Chat;InstantMessaging;
+Keywords=chat;p2p;decentralized;

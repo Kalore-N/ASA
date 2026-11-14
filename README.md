@@ -283,6 +283,24 @@ GitHub Releases 提供各平台的可运行产物；源码仓库不包含构建�
 | Linux x86-64 | `asa-1.2.1-linux-x86_64` | musl 静态单文件，无 glibc 依赖 |
 | Windows x86-64 | `asa-1.2.1-windows-x86_64.exe` | MSVC 构建，控制台程序 |
 | Android arm64 / x86_64 | `asa-1.2.1-android.apk` | Kotlin + Compose 图形界面，可直接安装 |
+| Arch Linux x86-64 | `asa-1.2.1-1-x86_64.pkg.tar.zst` | 含二进制、man、桌面入口与图标 |
+| Debian / Ubuntu amd64 | `asa_1.2.1_amd64.deb` | 含二进制、man、桌面入口与图标 |
+| Fedora / RHEL x86-64 | `asa-1.2.1-1.x86_64.rpm` | 含二进制、man、桌面入口与图标 |
+
+### Linux 发行版包
+
+```bash
+# Arch
+sudo pacman -U asa-1.2.1-1-x86_64.pkg.tar.zst
+
+# Debian / Ubuntu
+sudo apt install ./asa_1.2.1_amd64.deb
+
+# Fedora / RHEL
+sudo dnf install ./asa-1.2.1-1.x86_64.rpm
+```
+
+安装后直接运行 `asa`，或从应用菜单打开 ASA。安装包是静态二进制，不依赖系统 Rust 工具链。
 
 ### Windows
 
@@ -350,6 +368,16 @@ rustup target add x86_64-pc-windows-msvc
 cargo install cargo-xwin
 cargo xwin build --release --target x86_64-pc-windows-msvc
 ```
+
+### Linux 发行版包
+
+需要 `makepkg`、`fakeroot`、`ar`、`gzip`，以及 `rpmbuild`（RPM 部分）：
+
+```bash
+bash packaging/build-packages.sh
+```
+
+输出在 `dist/packages/`。`packaging/arch/PKGBUILD`、`packaging/rpm/asa.spec` 和脚本都可以直接复用。
 
 ### Android
 

@@ -14,3 +14,6 @@
 /android/app/build
 /android/local.properties
 /android/app/src/main/jniLibs
+
+# 打包中间目录
+/packaging/build

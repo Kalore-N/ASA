@@ -1,0 +1,28 @@
+pkgname=asa
+pkgver=1.2.1
+pkgrel=1
+packager="Kalore-N <zhanghaoyu2421@outlook.com>"
+pkgdesc="去中心化 TUI 群聊"
+arch=('x86_64')
+url="https://github.com/Kalore-N/ASA"
+license=('MIT')
+depends=()
+options=('!strip')
+source=(
+  "asa-${pkgver}"
+  "asa.desktop"
+  "asa.1.gz"
+  "asa.png"
+  "LICENSE"
+  "README.md"
+)
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+package() {
+  install -Dm755 "$srcdir/asa-${pkgver}" "$pkgdir/usr/bin/asa"
+  install -Dm644 "$srcdir/asa.desktop" "$pkgdir/usr/share/applications/asa.desktop"
+  install -Dm644 "$srcdir/asa.1.gz" "$pkgdir/usr/share/man/man1/asa.1.gz"
+  install -Dm644 "$srcdir/asa.png" "$pkgdir/usr/share/icons/hicolor/256x256/apps/asa.png"
+  install -Dm644 "$srcdir/LICENSE" "$pkgdir/usr/share/licenses/asa/LICENSE"
+  install -Dm644 "$srcdir/README.md" "$pkgdir/usr/share/doc/asa/README.md"
+}
