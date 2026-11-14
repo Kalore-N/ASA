@@ -3,6 +3,7 @@ package com.asa.chat
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 
@@ -11,8 +12,16 @@ import android.os.IBinder
  * 只有用户在界面里确认「退出频道」时才会被停止。
  */
 class AsaService : Service() {
+    private var multicastLock: WifiManager.MulticastLock? = null
+
     override fun onCreate() {
         super.onCreate()
+        multicastLock = getSystemService(WifiManager::class.java)
+            ?.createMulticastLock("asa-mdns")
+            ?.apply {
+                setReferenceCounted(false)
+                acquire()
+            }
         NotificationHelper.createChannels(this)
         val notification = NotificationHelper.backgroundNotification(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -32,6 +41,8 @@ class AsaService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        runCatching { multicastLock?.release() }
+        multicastLock = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }

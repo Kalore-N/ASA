@@ -1,6 +1,6 @@
 .\" 中文排版不适合两端对齐
 .ds AD l
-.TH ASA 1 "2026-11-14" "asa 1.5.0" "用户命令"
+.TH ASA 1 "2026-11-14" "asa 1.6.0" "用户命令"
 .nh
 .SH NAME
 asa \- 去中心化 TUI 群聊工具
@@ -36,7 +36,10 @@ asa \- 去中心化 TUI 群聊工具
 按编号精确回复。引用摘要会随消息一起发送，即使对方没有原消息的历史也能显示。
 .TP
 .B /sync
-向在线成员请求最近聊天记录；默认加入频道时也会自动同步。
+按
+.B sync.count
+配置的条数向在线成员请求历史记录；默认 50，0 表示全部（最多 5000 条）。
+历史从本地 JSONL 读取，重启后仍可同步；默认加入频道时也会自动同步。
 .TP
 .B /channels
 打开频道选择框。
@@ -186,8 +189,35 @@ TCP 监听端口，默认 7777。未显式指定时会复用
 .B /files
 查看进行中的文件传输。
 .TP
+.B /sync
+按
+.B sync.count
+配置的条数同步历史；0 表示全部（最多 5000 条）。
+.TP
 .BI "/reply " "[编号]"
 回复指定编号的消息。省略编号时列出最近消息的编号。
+.PP
+TUI 默认处于浏览模式：按
+.B i
+或
+.B Enter
+进入输入，
+.B Esc
+返回浏览。浏览模式下
+.B j
+/
+.B k
+滚动，
+.B g
+/
+.B G
+到最早/最新，
+.B PageUp
+/
+.B PageDown
+和鼠标滚轮也可滚动。配置
+.B ui.vim_mode
+为 false 可恢复传统输入模式。
 .TP
 .B /clear
 清空当前屏幕，不影响本地日志。
@@ -263,6 +293,22 @@ EasyTier 启动失败时会回退到局域网/中继，不阻塞聊天。
 Android 同一用户同时只能有一个 VpnService。ASA 使用 per-app VPN，
 只影响 ASA 自身；但会替换其他 VpnService。需要同时运行两个 VPN 时，
 可将 ASA 安装在工作资料中。
+.SH "LAN CHANNEL DISCOVERY"
+宿主进入频道后通过 mDNS 广播频道目录。TUI 大厅按
+.B f
+打开局域网频道列表，选择后输入加入密码；创建频道时按
+.B c
+会询问是否设置密码，已有频道按
+.B p
+修改。
+.PP
+密码使用 PBKDF2-SHA256 和 HMAC 挑战应答；邀请码用密码派生密钥加密后传输。
+没有密码的频道以开放形式广播，局域网内可直接加入。
+首次加入后保存邀请码和加密后的密码，下次启动发现频道时会在大厅自动选中，
+按 Enter 自动认证。
+.PP
+Android 在频道列表顶部显示局域网频道，点选后输入密码；聊天页菜单提供
+“同步聊天记录”“进行中的传输”“打开下载目录”。
 .SH FILES
 .TP
 .I ~/Documents/ASA/runtime/data/identity.json
@@ -278,10 +324,10 @@ Android 同一用户同时只能有一个 VpnService。ASA 使用 per-app VPN，
 旧版单群配置；首次启动会自动迁移到 rooms/。
 .TP
 .I ~/Documents/ASA/runtime/data/config.json
-全局配置：下载目录、单文件上限、自动接受、UI 偏好、mDNS、中继、历史同步与 EasyTier 节点。
+全局配置：下载目录、单文件上限、自动接受、UI 偏好（含 history_lines/vim_mode/scroll_step）、mDNS、中继、历史同步与 EasyTier 节点。
 .TP
 .I ~/Documents/ASA/runtime/data/groups/\fI群ID\fR.json
-群配置：群内昵称、EasyTier 开关，以及下载目录/大小上限/自动接受/提及提醒的覆盖项。
+群配置：群内昵称、EasyTier 开关、加入密码哈希/加密密码，以及下载目录/大小上限/自动接受/提及提醒的覆盖项。
 .TP
 .I ~/Documents/ASA/runtime/data/settings.json
 兼容旧版本的本地设置（端口）。
@@ -368,5 +414,8 @@ asa \-\-connect 203.0.113.10:7777
 .PP
 EasyTier 需要 TUN 权限；没有权限或节点不可达时会回退到局域网/中继。
 Android 上 EasyTier 会占用系统唯一的 VpnService，可能替换其他 VPN。
+.PP
+同步会把本地 JSONL 历史发送给在线成员；关闭 sync.enabled 可禁用自动同步。
+局域网开放频道没有密码，同网段任何人都能加入；敏感频道应设置加入密码。
 .SH "SEE ALSO"
 项目说明见 \fIREADME.md\fP。

@@ -55,7 +55,14 @@ fun ConnectScreen(
     state: UiState,
     initialPort: Int,
     initialMode: String = "create",
-    onStart: (mode: String, nick: String, invite: String?, port: String, connect: String) -> Unit,
+    onStart: (
+        mode: String,
+        nick: String,
+        invite: String?,
+        port: String,
+        connect: String,
+        joinPassword: String,
+    ) -> Unit,
     onOpenGroups: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
@@ -64,6 +71,7 @@ fun ConnectScreen(
     var port by rememberSaveable { mutableStateOf(initialPort.toString()) }
     var invite by rememberSaveable { mutableStateOf("") }
     var connect by rememberSaveable { mutableStateOf("") }
+    var joinPassword by rememberSaveable { mutableStateOf("") }
 
     Column(
         modifier = Modifier
@@ -149,6 +157,21 @@ fun ConnectScreen(
             )
         }
 
+        if (mode == "create") {
+            OutlinedTextField(
+                value = joinPassword,
+                onValueChange = { joinPassword = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("频道加入密码（可选）") },
+                supportingText = {
+                    Text("设置后局域网内需要密码；留空则局域网内可直接加入")
+                },
+                singleLine = true,
+                shape = FieldShape,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            )
+        }
+
         OutlinedTextField(
             value = port,
             onValueChange = { port = it.filter(Char::isDigit).take(5) },
@@ -187,6 +210,7 @@ fun ConnectScreen(
                     if (mode == "join") invite else null,
                     port,
                     connect,
+                    if (mode == "create") joinPassword else "",
                 )
             },
             modifier = Modifier

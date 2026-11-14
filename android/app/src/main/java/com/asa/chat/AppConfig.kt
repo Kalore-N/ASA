@@ -71,11 +71,11 @@ object ConfigStore {
         )
         json.put("max_file_mb", config.maxFileMb)
         json.put("auto_accept", config.autoAccept)
-        json.put("ui", JSONObject().apply {
-            put("theme", config.theme)
-            put("font_size", config.fontSize)
-            put("compact", config.compact)
-        })
+        val ui = json.optJSONObject("ui") ?: JSONObject()
+        ui.put("theme", config.theme)
+        ui.put("font_size", config.fontSize)
+        ui.put("compact", config.compact)
+        json.put("ui", ui)
         json.put("network", JSONObject().apply {
             put("port", config.port)
             put("mdns", config.mdns)

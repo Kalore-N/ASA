@@ -9,6 +9,7 @@ use anyhow::{anyhow, bail, Context, Result};
 
 use asa::config::{Config, GroupProfile};
 use asa::easytier::{self, EtProcess, EtStatus};
+use asa::lan::JoinServer;
 use asa::node::{Node, NodeConfig};
 use asa::paths::{self, RuntimeDirs};
 use asa::room::{self, RoomConfig};
@@ -517,6 +518,7 @@ fn run_chat(
             bootstrap: bootstrap.clone(),
             sync_history: config.sync.enabled,
             sync_count: config.sync.count,
+            history_limit: config.ui.history_lines,
             relays,
         };
 
@@ -526,6 +528,24 @@ fn run_chat(
             .build()
             .context("创建异步运行时失败")?;
         let handle = runtime.block_on(Node::start(cfg))?;
+        let channel_name = profile
+            .name
+            .clone()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| format!("频道 {}", &room.id[..room.id.len().min(8)]));
+        let join_server = if room.creator == handle.pubkey || profile.join_password.is_some() {
+            JoinServer::start(
+                &room,
+                &channel_name,
+                &nick,
+                handle.advertise.port(),
+                &handle.invite,
+                profile.join_password.clone(),
+            )
+            .ok()
+        } else {
+            None
+        };
         let ui = UiConfig {
             room_id: handle.room_id.clone(),
             listen: handle.advertise,
@@ -536,11 +556,14 @@ fn run_chat(
             easytier: et_status,
             config_nodes: config.easytier.nodes.clone(),
             dirs: dirs.clone(),
+            vim_mode: config.ui.vim_mode,
+            scroll_step: config.ui.scroll_step,
         };
         let action = tui::run(handle, ui);
         runtime.shutdown_timeout(Duration::from_secs(2));
-        // 切换频道前先停止 EasyTier，避免虚拟网卡残留。
+        // 切换频道前先停止 EasyTier 和频道目录。
         drop(et_process);
+        drop(join_server);
         match action? {
             TuiAction::Quit => break,
             TuiAction::Switch(room_id) => {

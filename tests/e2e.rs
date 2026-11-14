@@ -56,6 +56,7 @@ async fn start_node(
         bootstrap: Vec::new(),
         sync_history: false,
         sync_count: 50,
+        history_limit: 0,
         relays: Vec::new(),
     };
     let handle = Node::start(cfg).await.unwrap();
@@ -92,6 +93,7 @@ async fn start_node_sync(
         bootstrap: Vec::new(),
         sync_history: true,
         sync_count: 50,
+        history_limit: 0,
         relays: Vec::new(),
     };
     let handle = Node::start(cfg).await.unwrap();
@@ -625,6 +627,7 @@ async fn start_node_relay(
         bootstrap: Vec::new(),
         sync_history: false,
         sync_count: 50,
+        history_limit: 0,
         relays,
     };
     let handle = Node::start(cfg).await.unwrap();
@@ -752,5 +755,127 @@ async fn sync_pulls_recent_history_from_peer() {
     assert!(event.is_some(), "B 应从 A 同步到加入前的消息");
 
     node_a.cmd.send(Cmd::Quit).ok();
+    node_b.cmd.send(Cmd::Quit).ok();
+}
+
+async fn start_node_history(
+    root: &Path,
+    nick: &str,
+    identity: Identity,
+    room: &RoomConfig,
+    self_since: u64,
+    history_limit: usize,
+) -> (NodeHandle, RuntimeDirs) {
+    let dirs = RuntimeDirs::ensure(root).unwrap();
+    let cfg = NodeConfig {
+        signing: identity.signing.clone(),
+        pubkey: identity.pubkey_hex(),
+        nick: Arc::new(RwLock::new(nick.to_string())),
+        room_id: room.id.clone(),
+        room_key: room.key,
+        room_created: room.created_at,
+        creator: room.creator.clone(),
+        self_since,
+        bind: "127.0.0.1:0".parse().unwrap(),
+        advertise: None,
+        extra_entries: Vec::new(),
+        invite_et_nodes: Vec::new(),
+        dirs: dirs.clone(),
+        identity_path: identity_path(&dirs),
+        downloads: dirs.downloads.clone(),
+        max_file: 8 * 1024 * 1024,
+        auto_accept: false,
+        mdns: false,
+        bootstrap: Vec::new(),
+        sync_history: false,
+        sync_count: 50,
+        history_limit,
+        relays: Vec::new(),
+    };
+    let handle = Node::start(cfg).await.unwrap();
+    (handle, dirs)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sync_reads_local_history_after_restart() {
+    let root_a = unique_root("sync-restart-a");
+    let root_b = unique_root("sync-restart-b");
+    let identity_a = Identity::generate();
+    let identity_b = Identity::generate();
+    let room = RoomConfig::create(&identity_a);
+
+    let (node_a1, _dirs_a) = start_node_history(
+        &root_a,
+        "alice",
+        identity_a.clone(),
+        &room,
+        room.created_at,
+        200,
+    )
+    .await;
+    node_a1
+        .cmd
+        .send(Cmd::Chat {
+            text: "old before restart".into(),
+            reply: None,
+        })
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    node_a1.cmd.send(Cmd::Quit).ok();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // 重启后应该先把本地历史发给界面。
+    let (node_a2, _dirs_a2) = start_node_history(
+        &root_a,
+        "alice",
+        identity_a.clone(),
+        &room,
+        room.created_at,
+        200,
+    )
+    .await;
+    let local = wait_event(&node_a2.events, Duration::from_secs(5), |event| {
+        matches!(
+            event,
+            NodeEvent::Chat {
+                text,
+                history: true,
+                ..
+            } if text == "old before restart"
+        )
+    });
+    assert!(local.is_some(), "重启后应加载本地历史");
+
+    let (node_b, _dirs_b) = start_node_history(
+        &root_b,
+        "bob",
+        identity_b.clone(),
+        &room,
+        asa::util::now_ms(),
+        0,
+    )
+    .await;
+    connect(&node_b, &node_a2);
+    assert!(
+        wait_event(&node_b.events, Duration::from_secs(10), |event| {
+            matches!(event, NodeEvent::Members { members, .. } if members.len() >= 2)
+        })
+        .is_some(),
+        "B 应连接到 A"
+    );
+    node_b.cmd.send(Cmd::Sync).unwrap();
+    let synced = wait_event(&node_b.events, Duration::from_secs(10), |event| {
+        matches!(
+            event,
+            NodeEvent::Chat {
+                text,
+                history: true,
+                ..
+            } if text == "old before restart"
+        )
+    });
+    assert!(synced.is_some(), "B 应同步到 A 重启前的历史");
+
+    node_a2.cmd.send(Cmd::Quit).ok();
     node_b.cmd.send(Cmd::Quit).ok();
 }

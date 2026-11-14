@@ -59,6 +59,15 @@ pub struct UiPrefs {
     pub font_size: u16,
     #[serde(default)]
     pub compact: bool,
+    /// 启动时加载并显示的历史消息条数；0 表示不加载。
+    #[serde(default = "default_history_lines")]
+    pub history_lines: usize,
+    /// TUI 常驻 Vim 模式：j/k 滚动，i 进入输入。
+    #[serde(default = "default_vim_mode")]
+    pub vim_mode: bool,
+    /// TUI 单次滚动行数（j/k、鼠标滚轮）。
+    #[serde(default = "default_scroll_step")]
+    pub scroll_step: u16,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -121,8 +130,23 @@ impl Default for UiPrefs {
             theme: default_theme(),
             font_size: default_font_size(),
             compact: false,
+            history_lines: default_history_lines(),
+            vim_mode: default_vim_mode(),
+            scroll_step: default_scroll_step(),
         }
     }
+}
+
+fn default_history_lines() -> usize {
+    200
+}
+
+fn default_vim_mode() -> bool {
+    true
+}
+
+fn default_scroll_step() -> u16 {
+    3
 }
 
 impl Default for NetworkPrefs {
@@ -216,6 +240,14 @@ impl Config {
     }
 }
 
+/// 频道加入密码的 PBKDF2 哈希（宿主侧保存）。
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JoinPassword {
+    pub salt: String,
+    pub iterations: u32,
+    pub hash: String,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct GroupProfile {
     /// 本机显示的群名称，只保存在本地，不影响其他成员。
@@ -234,6 +266,12 @@ pub struct GroupProfile {
     /// 是否为此频道开启 EasyTier 内网穿透。
     #[serde(default)]
     pub easytier_enabled: Option<bool>,
+    /// 宿主设置的频道加入密码哈希。
+    #[serde(default)]
+    pub join_password: Option<JoinPassword>,
+    /// 客户端保存的加入密码（用频道密钥加密）。
+    #[serde(default)]
+    pub join_password_enc: Option<String>,
 }
 
 impl GroupProfile {

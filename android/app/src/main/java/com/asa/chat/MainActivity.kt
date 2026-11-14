@@ -88,8 +88,16 @@ class MainActivity : ComponentActivity() {
                             state = state,
                             initialPort = config.port,
                             initialMode = connectMode,
-                            onStart = { mode, nick, invite, port, connect ->
-                                vm.start(mode, nick, invite, port, connect, config)
+                            onStart = { mode, nick, invite, port, connect, joinPassword ->
+                                vm.start(
+                                    mode,
+                                    nick,
+                                    invite,
+                                    port,
+                                    connect,
+                                    config,
+                                    joinPassword = joinPassword,
+                                )
                             },
                             onOpenGroups = { vm.showGroups() },
                             onOpenSettings = { showSettings = true },
@@ -108,6 +116,10 @@ class MainActivity : ComponentActivity() {
                             onRename = { roomId, name -> vm.renameGroup(roomId, name) },
                             onToggleEasytier = { roomId, enabled ->
                                 vm.toggleEasytier(roomId, enabled)
+                            },
+                            onRefreshLan = { vm.discoverLan() },
+                            onJoinLan = { channel, password ->
+                                vm.joinLan(channel, password)
                             },
                             onOpenSettings = { showSettings = true },
                         )

@@ -114,6 +114,86 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
         reloadGroups(getApplication())
     }
 
+    fun discoverLan() {
+        if (_state.value.lanLoading) return
+        _state.update { it.copy(lanLoading = true) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val app = getApplication<Application>()
+            val lock = app.getSystemService(android.net.wifi.WifiManager::class.java)
+                ?.createMulticastLock("asa-lan")
+                ?.apply {
+                    setReferenceCounted(false)
+                    runCatching { acquire() }
+                }
+            val json = try {
+                runCatching { NativeBridge.discoverChannels(2500) }.getOrNull()
+            } finally {
+                runCatching { lock?.release() }
+            }
+            android.util.Log.i("AsaLan", "discover: $json")
+            val channels = runCatching {
+                val obj = JSONObject(json ?: "{}")
+                if (!obj.optBoolean("ok")) return@runCatching emptyList()
+                val array = obj.optJSONArray("channels") ?: return@runCatching emptyList()
+                buildList {
+                    for (index in 0 until array.length()) {
+                        val item = array.optJSONObject(index) ?: continue
+                        val room = item.optString("room")
+                        if (room.isBlank()) continue
+                        add(
+                            LanChannel(
+                                room = room,
+                                name = item.optString("name").ifBlank {
+                                    "频道 ${room.take(8)}"
+                                },
+                                host = item.optString("host"),
+                                addr = item.optString("addr"),
+                                joinAddr = item.optString("join_addr"),
+                                open = item.optBoolean("open"),
+                            ),
+                        )
+                    }
+                }
+            }.getOrDefault(emptyList())
+            _state.update { it.copy(lanChannels = channels, lanLoading = false) }
+        }
+    }
+
+    fun joinLan(channel: LanChannel, password: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val app = getApplication<Application>()
+            val result = runCatching {
+                JSONObject(
+                    NativeBridge.joinDiscoveredChannel(
+                        dataDir(app),
+                        channel.joinAddr,
+                        channel.room,
+                        password,
+                    ),
+                )
+            }.getOrNull()
+            android.util.Log.i("AsaLan", "join: channel=${channel.name} result=$result")
+            if (result?.optBoolean("ok") == true) {
+                val roomId = result.optString("room_id")
+                reloadGroups(app)
+                val config = lastConfig ?: ConfigStore.load(app)
+                start(
+                    mode = "chat",
+                    nick = _state.value.nick,
+                    invite = null,
+                    portText = config.port.toString(),
+                    connectText = "",
+                    appConfig = config,
+                    roomId = roomId,
+                )
+            } else {
+                _state.update {
+                    it.copy(error = result?.optString("error") ?: "加入局域网频道失败")
+                }
+            }
+        }
+    }
+
     fun showConnect() {
         _state.update { it.copy(screen = Screen.Connect) }
     }
@@ -181,6 +261,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
         connectText: String,
         appConfig: AppConfig,
         roomId: String? = null,
+        joinPassword: String = "",
     ) {
         if (_state.value.connecting) return
         _state.update { it.copy(connecting = true, error = null, info = null) }
@@ -213,6 +294,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 if (!invite.isNullOrBlank()) put("invite", invite.trim())
                 if (!roomId.isNullOrBlank()) put("room_id", roomId)
+                if (joinPassword.isNotBlank()) put("join_password", joinPassword)
                 put("connect", JSONArray(connects))
             }.toString()
 
@@ -349,6 +431,49 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         _state.update { it.copy(replyTarget = null) }
+    }
+
+    fun sync() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val command = JSONObject().put("cmd", "sync").toString()
+            val result = runCatching { NativeBridge.sendCommand(command) }.getOrNull()
+            if (result == null || result.contains("\"ok\":false")) {
+                _state.update { it.copy(error = "同步请求失败") }
+            }
+        }
+    }
+
+    fun openDownloads() {
+        val app = getApplication<Application>()
+        val dir = File(
+            _state.value.downloads.ifBlank {
+                File(app.filesDir, "asa/runtime/downloads").absolutePath
+            },
+        )
+        dir.mkdirs()
+        val uri = runCatching {
+            androidx.core.content.FileProvider.getUriForFile(
+                app,
+                "${app.packageName}.fileprovider",
+                dir,
+            )
+        }.getOrNull()
+        if (uri != null) {
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "vnd.android.document/directory")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            val chooser = Intent.createChooser(intent, "打开下载目录")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (runCatching { app.startActivity(chooser) }.isSuccess) return
+        }
+        val clipboard = app.getSystemService(android.content.ClipboardManager::class.java)
+        clipboard?.setPrimaryClip(
+            android.content.ClipData.newPlainText("ASA 下载目录", dir.absolutePath),
+        )
+        _state.update {
+            it.copy(info = "下载目录: ${dir.absolutePath}（路径已复制）")
+        }
     }
 
     fun setReply(message: ChatMessage) {

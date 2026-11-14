@@ -2,7 +2,7 @@
 
 这是我第一次尝试vibe coding的产物，随便写了点小东西玩玩
 
-当前版本：**1.5.0**
+当前版本：**1.6.0**
 
 ASA 是一个用 Rust 编写的**完全去中心化**终端频道工具：没有中心服务器，每个参与者都是对等节点。支持局域网自动发现、跨网手动连接、端到端加密、本地聊天记录（JSONL）以及文件传输。
 
@@ -68,6 +68,31 @@ asa invite     # 打印当前群的邀请码
 
 进入频道后可用 `/channels` 再次打开选择框，或用 `/switch <名称或 ID>` 直接切换。
 切换频道会重启网络节点，但不会删除任何本地文件。
+
+### TUI 浏览模式（Vim）
+
+TUI 默认进入**浏览模式**，不会直接接收文字：
+
+- `i` / `a` / `Enter`：进入输入模式
+- 输入模式下 `Enter` 发送，`Esc` 返回浏览模式
+- 浏览模式下 `j` / `k` 向下/向上滚动，`g` / `G` 到最早/最新
+- `PageUp` / `PageDown`、鼠标滚轮也可以滚动
+- 聊天区右侧显示滚动条，底部显示“已向上 N 行”
+- `Ctrl+C` 退出，`Ctrl+L` 清屏，`Ctrl+U` 清空输入
+
+可以在配置文件中修改：
+
+```json
+"ui": {
+  "vim_mode": true,
+  "scroll_step": 3,
+  "history_lines": 200
+}
+```
+
+- `vim_mode`：`true` 常驻 Vim 风格；`false` 恢复传统“直接输入”模式
+- `scroll_step`：`j/k` 和鼠标滚轮每次滚动行数
+- `history_lines`：启动时从本地 JSONL 加载并显示的历史条数，0 表示不加载
 
 ## EasyTier 内网穿透（可选）
 
@@ -162,7 +187,7 @@ Android 同一用户同时只能有一个 **VpnService**。ASA 使用 per-app VP
 | `/copy` | 把最近的邀请码/保存路径复制到系统剪贴板（OSC 52） |
 | `/accept <编号>` / `/deny <编号>` | 接受/拒绝收到的文件 |
 | `/files` | 查看进行中的传输 |
-| `/sync` | 向在线成员请求最近聊天记录（默认也会自动同步） |
+| `/sync` | 按 `sync.count` 条向在线成员请求历史记录；0 表示全部，默认 50 |
 | `/channels` | 打开频道选择框 |
 | `/switch <名称或 ID>` | 切换到指定频道 |
 | `/et [status\|on\|off\|add <地址>\|list\|remove <编号>]` | 管理 EasyTier 节点与当前频道内网穿透 |
@@ -208,7 +233,14 @@ asa import <文件>               导入群文件
   "download_dir": null,
   "max_file_mb": 100,
   "auto_accept": false,
-  "ui": { "theme": "dark", "font_size": 15, "compact": false },
+  "ui": {
+    "theme": "dark",
+    "font_size": 15,
+    "compact": false,
+    "history_lines": 200,
+    "vim_mode": true,
+    "scroll_step": 3
+  },
   "network": { "port": null, "mdns": true, "relays": [] },
   "sync": { "enabled": true, "count": 50 },
   "easytier": { "nodes": [] }
@@ -219,10 +251,13 @@ asa import <文件>               导入群文件
 - `max_file_mb`：单文件上限，0 表示不限制。
 - `ui.theme`：`dark` / `light` / `high-contrast`（Android 立即生效；TUI 只保存偏好）。
 - `ui.font_size`：Android 字号；TUI 的终端字体由终端模拟器决定，程序无法可靠修改。
+- `ui.history_lines`：TUI/Android 启动时加载的本地历史条数，默认 200。
+- `ui.vim_mode`：TUI 是否常驻 Vim 浏览模式，默认开启。
+- `ui.scroll_step`：TUI 单次滚动行数，默认 3。
 - `network.mdns`：局域网自动发现，默认开启，因此局域网开箱即用。
 - `network.relays`：跨网中继地址，默认空；部署中继后执行 `asa relay add` 写入。
 - `sync.enabled`：加入频道后自动向在线成员拉取最近聊天记录，默认开启。
-- `sync.count`：每次请求的最大条数，默认 50，最高 200。同步内容会写入本地 JSONL 日志，并按原时间插入界面；可用 `/sync` 手动再拉取一次。
+- `sync.count`：每次请求的条数，默认 50；设为 0 表示全部（最多 5000 条）。同步会从**本地全部 JSONL 历史**中取记录，并写入本地日志、按原时间插入界面；可用 `/sync` 手动触发。
 - `easytier.nodes`：手动导入或一键导入的 EasyTier 节点地址列表，默认空；为空时频道仍可用局域网/中继。
 
 群配置在 `runtime/data/groups/<频道 ID>.json`，`null` 表示继承全局：
@@ -300,6 +335,26 @@ asa import my-group.json
 - 新设备导入 `my-group.json`，或使用长期邀请码，即可加入。
 - 如果中继也下线，群仍保存在本地/群文件中；重新部署中继后即可恢复入口。
 
+## 局域网频道发现
+
+宿主进入频道后，会在局域网广播频道目录（mDNS，`_asa-channel._tcp.local.`）。
+客户端无需先拿到邀请码，就可以发现并加入：
+
+- **创建频道时** TUI 会询问是否设置“频道加入密码”；直接回车表示不设密码
+- 已有频道可在 TUI 大厅按 `p` 设置/清除加入密码
+- TUI 大厅按 `f` 打开“局域网频道”列表，选择后输入密码加入
+- Android 在频道列表顶部显示“局域网频道”，点选后输入密码加入
+- 首次加入成功后保存邀请码，并保存**用频道密钥加密的加入密码**
+- 再次启动时，如果发现已保存的频道，大厅会自动选中它；按 Enter 自动认证
+
+密码验证使用 PBKDF2-SHA256（随机 salt，约 21 万次迭代）和 HMAC 挑战应答；
+邀请码通过密码派生密钥加密后传输，不在局域网明文发送密码。
+
+- 没有设置密码的频道会以“开放”形式广播，局域网内任何人都能直接加入
+- 不想暴露频道时，请设置加入密码；或不要长期停留在频道内
+- mDNS 只用于局域网发现；跨网仍走邀请码、中继或 EasyTier
+- Android 模拟器之间可能无法互相发现 mDNS，请用两台真机在同一 Wi-Fi 测试
+
 ## 架构
 
 ```
@@ -368,6 +423,9 @@ deploy/         中继的 Docker / systemd / Fly.io 部署文件
 - EasyTier 节点地址可能被打码；打码地址无法使用，需要从 EasyTier QQ 群获取完整地址。
 - Linux 便携版需要手动 `setcap`，Windows 需要管理员权限；否则 EasyTier 会回退到局域网/中继。
 - Android 同一用户只能有一个 VpnService；ASA 使用 per-app VPN，只影响 ASA 自身，但会替换其他 VpnService。
+- `/sync` 会把本地 JSONL 中的历史消息发给在线成员；如果不想共享，请关闭 `sync.enabled`，或不要手动触发同步。
+- 局域网“开放”频道没有密码，同网段任何人都能加入；敏感频道请设置加入密码。
+- mDNS 不认证频道目录，局域网攻击者可以看到频道名；密码只保护加入过程。
 
 ## 平台与安装包
 
@@ -375,25 +433,25 @@ GitHub Releases 提供各平台的可运行产物；源码仓库不包含构建�
 
 | 平台 | 文件 | 说明 |
 | --- | --- | --- |
-| Linux x86-64 | `asa-1.5.0-linux-x86_64.tar.gz` | 含 `asa`、`easytier-core`、`easytier-cli` |
-| Windows x86-64 | `asa-1.5.0-windows-x86_64.zip` | 含 `asa.exe`、EasyTier、`wintun.dll` |
-| Android arm64 | `asa-1.5.0-android-arm64.apk` | 真机推荐；含 arm64 EasyTier 原生库 |
-| Android x86_64 | `asa-1.5.0-android-x86_64.apk` | 模拟器 / x86_64 平板 |
-| Arch Linux x86-64 | `asa-1.5.0-1-x86_64.pkg.tar.zst` | 含二进制、EasyTier、man、桌面入口与图标 |
-| Debian / Ubuntu amd64 | `asa_1.5.0_amd64.deb` | 含二进制、EasyTier、man、桌面入口与图标 |
-| Fedora / RHEL x86-64 | `asa-1.5.0-1.x86_64.rpm` | 含二进制、EasyTier、man、桌面入口与图标 |
+| Linux x86-64 | `asa-1.6.0-linux-x86_64.tar.gz` | 含 `asa`、`easytier-core`、`easytier-cli` |
+| Windows x86-64 | `asa-1.6.0-windows-x86_64.zip` | 含 `asa.exe`、EasyTier、`wintun.dll` |
+| Android arm64 | `asa-1.6.0-android-arm64.apk` | 真机推荐；含 arm64 EasyTier 原生库 |
+| Android x86_64 | `asa-1.6.0-android-x86_64.apk` | 模拟器 / x86_64 平板 |
+| Arch Linux x86-64 | `asa-1.6.0-1-x86_64.pkg.tar.zst` | 含二进制、EasyTier、man、桌面入口与图标 |
+| Debian / Ubuntu amd64 | `asa_1.6.0_amd64.deb` | 含二进制、EasyTier、man、桌面入口与图标 |
+| Fedora / RHEL x86-64 | `asa-1.6.0-1.x86_64.rpm` | 含二进制、EasyTier、man、桌面入口与图标 |
 
 ### Linux 发行版包
 
 ```bash
 # Arch
-sudo pacman -U asa-1.5.0-1-x86_64.pkg.tar.zst
+sudo pacman -U asa-1.6.0-1-x86_64.pkg.tar.zst
 
 # Debian / Ubuntu
-sudo apt install ./asa_1.5.0_amd64.deb
+sudo apt install ./asa_1.6.0_amd64.deb
 
 # Fedora / RHEL
-sudo dnf install ./asa-1.5.0-1.x86_64.rpm
+sudo dnf install ./asa-1.6.0-1.x86_64.rpm
 ```
 
 安装后直接运行 `asa`，或从应用菜单打开 ASA。安装包是静态二进制，不依赖系统 Rust 工具链。
@@ -416,6 +474,11 @@ sudo dnf install ./asa-1.5.0-1.x86_64.rpm
 4. 创建群后，点右上角邀请码图标，复制邀请码发给朋友。
 
 Android 版说明：
+
+- 聊天页“更多”菜单提供：同步聊天记录、进行中的传输、打开下载目录
+- 进入频道时会从本地 JSONL 加载最近历史；`/sync` 可以继续向在线成员拉取
+- 频道列表顶部会显示局域网内发现的频道，设置密码的频道需要输入密码
+- 查看文件传输进度，或直接打开系统文件管理器中的 ASA 下载目录
 
 - 页面采用小圆角：消息气泡 8dp，按钮、输入框和卡片 6dp。
 - 设置页包含下载保存位置与复制、单文件上限、主题、字号、紧凑布局、mDNS、中继、自动接受；与 `config.json` 字段对应。

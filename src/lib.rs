@@ -9,6 +9,7 @@ pub mod discovery;
 pub mod easytier;
 pub mod history;
 pub mod identity;
+pub mod lan;
 pub mod net;
 pub mod node;
 pub mod paths;

@@ -42,6 +42,15 @@ data class Transfer(
     val outgoing: Boolean,
 )
 
+data class LanChannel(
+    val room: String,
+    val name: String,
+    val host: String,
+    val addr: String,
+    val joinAddr: String,
+    val open: Boolean,
+)
+
 data class SavedGroup(
     val id: String,
     val name: String,
@@ -75,6 +84,8 @@ data class UiState(
     val easytierEnabled: Boolean = false,
     val easytierIp: String? = null,
     val easytierError: String? = null,
+    val lanChannels: List<LanChannel> = emptyList(),
+    val lanLoading: Boolean = false,
 ) {
     val hostNick: String
         get() = members.firstOrNull { it.pubkey == host }?.nick ?: "—"

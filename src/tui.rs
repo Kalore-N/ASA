@@ -8,19 +8,23 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use crossterm::cursor;
 use crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
 };
 use crossterm::terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+    ScrollbarOrientation, ScrollbarState,
+};
 use ratatui::{Frame, Terminal};
 use tokio::sync::mpsc::UnboundedSender;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use crate::lan::{ChannelBrowser, DiscoveredChannel};
 use crate::node::{Cmd, MemberView, NodeEvent, NodeHandle};
 use crate::proto::ReplyRef;
 use crate::util;
@@ -145,6 +149,14 @@ pub struct UiConfig {
     pub easytier: crate::easytier::EtStatus,
     pub config_nodes: Vec<String>,
     pub dirs: crate::paths::RuntimeDirs,
+    pub vim_mode: bool,
+    pub scroll_step: u16,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InputMode {
+    Normal,
+    Insert,
 }
 
 pub struct App {
@@ -188,6 +200,9 @@ pub struct App {
     easytier: crate::easytier::EtStatus,
     config_nodes: Vec<String>,
     dirs: crate::paths::RuntimeDirs,
+    input_mode: InputMode,
+    vim_mode: bool,
+    scroll_step: u16,
 }
 
 impl App {
@@ -228,6 +243,13 @@ impl App {
             easytier: cfg.easytier,
             config_nodes: cfg.config_nodes,
             dirs: cfg.dirs,
+            input_mode: if cfg.vim_mode {
+                InputMode::Normal
+            } else {
+                InputMode::Insert
+            },
+            vim_mode: cfg.vim_mode,
+            scroll_step: cfg.scroll_step.max(1),
         };
         app.push_system("欢迎使用 ASA。直接输入文字回车发送；/help 查看命令；/invite 获取邀请码。");
         app
@@ -436,6 +458,17 @@ impl App {
             }
             return;
         }
+        if self.vim_mode {
+            if self.input_mode == InputMode::Normal {
+                if self.on_normal_key(key) {
+                    return;
+                }
+            } else if key.code == KeyCode::Esc && !ctrl {
+                self.input_mode = InputMode::Normal;
+                self.completion = None;
+                return;
+            }
+        }
         match key.code {
             KeyCode::Char('c') if ctrl => self.should_quit = true,
             KeyCode::Char('l') if ctrl => {
@@ -489,16 +522,8 @@ impl App {
                 self.completion = None;
                 self.history_next();
             }
-            KeyCode::PageUp => {
-                self.scroll = self.scroll.saturating_add(10);
-                self.follow = false;
-            }
-            KeyCode::PageDown => {
-                self.scroll = self.scroll.saturating_sub(10);
-                if self.scroll == 0 {
-                    self.follow = true;
-                }
-            }
+            KeyCode::PageUp => self.scroll_up(10),
+            KeyCode::PageDown => self.scroll_down(10),
             KeyCode::Tab => self.complete(false),
             KeyCode::BackTab => self.complete(true),
             KeyCode::Esc => {
@@ -512,6 +537,68 @@ impl App {
             KeyCode::Char(ch) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
                 self.completion = None;
                 self.insert_text(&ch.to_string());
+            }
+            _ => {}
+        }
+    }
+
+    /// 浏览模式按键；返回 true 表示已处理。
+    fn on_normal_key(&mut self, key: KeyEvent) -> bool {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl {
+            // Ctrl+C/L/U/R/Y 交给主键盘处理。
+            return !matches!(key.code, KeyCode::Char('c' | 'l' | 'u' | 'r' | 'y'));
+        }
+        match key.code {
+            KeyCode::Char('i') | KeyCode::Char('a') | KeyCode::Enter => {
+                self.input_mode = InputMode::Insert;
+                self.completion = None;
+            }
+            KeyCode::Char('/') => {
+                self.input_mode = InputMode::Insert;
+                self.insert_text("/");
+            }
+            KeyCode::Char('j') | KeyCode::Down => self.scroll_down(self.scroll_step as usize),
+            KeyCode::Char('k') | KeyCode::Up => self.scroll_up(self.scroll_step as usize),
+            KeyCode::Char('g') => self.scroll_top(),
+            KeyCode::Char('G') => self.scroll_bottom(),
+            KeyCode::PageDown => self.scroll_down(10),
+            KeyCode::PageUp => self.scroll_up(10),
+            KeyCode::Home => self.scroll_top(),
+            KeyCode::End => self.scroll_bottom(),
+            KeyCode::Esc => {}
+            _ => {}
+        }
+        true
+    }
+
+    fn scroll_up(&mut self, lines: usize) {
+        self.scroll = self.scroll.saturating_add(lines);
+        self.follow = false;
+    }
+
+    fn scroll_down(&mut self, lines: usize) {
+        self.scroll = self.scroll.saturating_sub(lines);
+        if self.scroll == 0 {
+            self.follow = true;
+        }
+    }
+
+    fn scroll_top(&mut self) {
+        self.scroll = 100_000;
+        self.follow = false;
+    }
+
+    fn scroll_bottom(&mut self) {
+        self.scroll = 0;
+        self.follow = true;
+    }
+
+    fn on_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+        match mouse.kind {
+            crossterm::event::MouseEventKind::ScrollUp => self.scroll_up(self.scroll_step as usize),
+            crossterm::event::MouseEventKind::ScrollDown => {
+                self.scroll_down(self.scroll_step as usize)
             }
             _ => {}
         }
@@ -1492,6 +1579,26 @@ impl App {
         let start = total.saturating_sub(height + self.scroll);
         let paragraph = Paragraph::new(lines).block(block).scroll((start as u16, 0));
         frame.render_widget(paragraph, area);
+        if total > height && area.width > 2 && area.height > 2 {
+            let sb_area = Rect {
+                x: area.x + area.width.saturating_sub(1),
+                y: area.y + 1,
+                width: 1,
+                height: area.height.saturating_sub(2),
+            };
+            let mut state = ScrollbarState::new(total)
+                .viewport_content_length(height)
+                .position(start);
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                    .begin_symbol(None)
+                    .end_symbol(None)
+                    .track_symbol(Some("│"))
+                    .thumb_symbol("█"),
+                sb_area,
+                &mut state,
+            );
+        }
     }
 
     fn chat_lines(&self, width: usize) -> (Vec<Line<'static>>, Vec<usize>) {
@@ -1877,14 +1984,42 @@ impl App {
             spans.push(Span::styled(visible, Style::default().fg(Color::White)));
         }
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
-        frame.set_cursor_position((area.x + cursor_x.min(area.width.saturating_sub(1)), area.y));
+        if !self.vim_mode || self.input_mode == InputMode::Insert {
+            frame
+                .set_cursor_position((area.x + cursor_x.min(area.width.saturating_sub(1)), area.y));
+        }
     }
 
     fn draw_footer(&self, frame: &mut Frame, area: Rect) {
-        let mut spans = vec![Span::styled(HINTS, Style::default().fg(Color::DarkGray))];
-        if self.scroll > 0 {
+        let hints = if self.vim_mode {
+            if self.input_mode == InputMode::Normal {
+                "浏览 · i 输入 · j/k 滚动 · g/G 顶/底 · PgUp/PgDn · Ctrl+C 退出"
+            } else {
+                "输入 · Enter 发送 · Esc 浏览 · Tab 补全 · Ctrl+R 回复 · PgUp/PgDn 滚动 · Ctrl+C 退出"
+            }
+        } else {
+            HINTS
+        };
+        let mut spans = vec![Span::styled(hints, Style::default().fg(Color::DarkGray))];
+        if self.vim_mode {
+            let mode = if self.input_mode == InputMode::Normal {
+                "浏览"
+            } else {
+                "输入"
+            };
             spans.push(Span::styled(
-                format!("  ↑ 已向上 {} 行 (End 回到底部)", self.scroll),
+                format!("  [{mode}]"),
+                Style::default().fg(Color::Cyan),
+            ));
+        }
+        if self.scroll > 0 {
+            let back = if self.vim_mode {
+                "G 回到底部"
+            } else {
+                "End 回到底部"
+            };
+            spans.push(Span::styled(
+                format!("  ↑ 已向上 {} 行 ({back})", self.scroll),
                 Style::default().fg(Color::Yellow),
             ));
         }
@@ -1942,11 +2077,17 @@ pub fn run(handle: NodeHandle, cfg: UiConfig) -> Result<TuiAction> {
                     }
                 }
                 Event::Paste(text) => app.insert_text(&text),
+                Event::Mouse(mouse) => app.on_mouse(mouse),
                 Event::Resize(_, _) => {}
                 _ => {}
             }
         }
         terminal.draw(|frame| app.draw(frame))?;
+        if app.vim_mode && app.input_mode == InputMode::Normal {
+            let _ = terminal.hide_cursor();
+        } else {
+            let _ = terminal.show_cursor();
+        }
         if app.action.is_some() {
             break;
         }
@@ -1959,7 +2100,12 @@ pub fn run(handle: NodeHandle, cfg: UiConfig) -> Result<TuiAction> {
 fn init_terminal() -> Result<Terminal<CrosstermBackend<std::io::Stdout>>> {
     terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
-    crossterm::execute!(stdout, terminal::EnterAlternateScreen, EnableBracketedPaste)?;
+    crossterm::execute!(
+        stdout,
+        terminal::EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableMouseCapture
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
@@ -1972,6 +2118,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) 
         terminal.backend_mut(),
         terminal::LeaveAlternateScreen,
         DisableBracketedPaste,
+        DisableMouseCapture,
         cursor::Show
     )?;
     terminal.show_cursor()?;
@@ -1986,6 +2133,7 @@ fn install_panic_hook() {
             std::io::stdout(),
             terminal::LeaveAlternateScreen,
             DisableBracketedPaste,
+            DisableMouseCapture,
             cursor::Show
         );
         hook(info);
@@ -2275,6 +2423,9 @@ mod tests {
             config_nodes: Vec::new(),
             dirs: crate::paths::RuntimeDirs::ensure(std::path::Path::new("target/test-runtime"))
                 .unwrap(),
+            input_mode: InputMode::Insert,
+            vim_mode: false,
+            scroll_step: 3,
             listen: "127.0.0.1:7777".parse().unwrap(),
             invite: String::new(),
             max_file: 0,
@@ -2489,11 +2640,16 @@ use crate::paths::RuntimeDirs;
 use crate::room::RoomConfig;
 use crate::rooms;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum LobbyMode {
     List,
     Join,
     Rename,
     AddNode,
+    CreatePassword,
+    SetPassword,
+    LanList,
+    LanPassword,
     ConfirmDelete,
 }
 
@@ -2514,6 +2670,13 @@ struct LobbyApp {
     status: Option<(String, bool)>,
     config: config::Config,
     et_enabled: std::collections::HashMap<String, bool>,
+    browser: Option<ChannelBrowser>,
+    lan_rx: Option<std::sync::mpsc::Receiver<DiscoveredChannel>>,
+    lan: Vec<DiscoveredChannel>,
+    lan_index: usize,
+    pending_channel: Option<DiscoveredChannel>,
+    pending_room: Option<RoomConfig>,
+    auto_selected: bool,
 }
 
 impl LobbyApp {
@@ -2521,6 +2684,10 @@ impl LobbyApp {
         let groups = rooms::list(&dirs)?;
         let index = groups.iter().position(|group| group.active).unwrap_or(0);
         let config = config::Config::ensure(&dirs)?;
+        let (browser, lan_rx) = match ChannelBrowser::start() {
+            Ok((browser, rx)) => (Some(browser), Some(rx)),
+            Err(_) => (None, None),
+        };
         let et_enabled = groups
             .iter()
             .map(|group| {
@@ -2541,6 +2708,13 @@ impl LobbyApp {
             status: None,
             config,
             et_enabled,
+            browser,
+            lan_rx,
+            lan: Vec::new(),
+            lan_index: 0,
+            pending_channel: None,
+            pending_room: None,
+            auto_selected: false,
         })
     }
 
@@ -2564,6 +2738,116 @@ impl LobbyApp {
 
     fn set_status(&mut self, text: impl Into<String>, error: bool) {
         self.status = Some((text.into(), error));
+    }
+
+    fn drain_lan(&mut self) {
+        if let Some(rx) = &self.lan_rx {
+            while let Ok(channel) = rx.try_recv() {
+                if !self
+                    .lan
+                    .iter()
+                    .any(|item| item.room == channel.room && item.join_addr == channel.join_addr)
+                {
+                    self.lan.push(channel);
+                }
+            }
+        }
+        if self.auto_selected || self.mode != LobbyMode::List {
+            return;
+        }
+        if let Some(pos) = self
+            .groups
+            .iter()
+            .position(|group| self.lan.iter().any(|channel| channel.room == group.id))
+        {
+            let path = crate::config::group_path(&self.dirs, &self.groups[pos].id);
+            let profile = GroupProfile::load_at(&path).unwrap_or_default();
+            if profile.join_password_enc.is_some() {
+                self.index = pos;
+                self.auto_selected = true;
+                let name = self.groups[pos].name.clone();
+                self.set_status(format!("已发现「{name}」，按 Enter 自动认证"), false);
+            }
+        }
+    }
+
+    fn finish_create(&mut self, password: Option<&str>) -> Option<LobbyOutcome> {
+        let room = self.pending_room.take()?;
+        let path = crate::config::group_path(&self.dirs, &room.id);
+        let mut profile = GroupProfile::load_at(&path).unwrap_or_default();
+        profile.join_password = match password.filter(|value| !value.is_empty()) {
+            Some(value) => match crate::config::JoinPassword::new(value) {
+                Ok(password) => Some(password),
+                Err(err) => {
+                    self.set_status(format!("设置加入密码失败: {err}"), true);
+                    self.pending_room = Some(room);
+                    return None;
+                }
+            },
+            None => None,
+        };
+        if let Err(err) = profile.save_at(&path) {
+            self.set_status(format!("保存频道失败: {err}"), true);
+            self.pending_room = Some(room);
+            return None;
+        }
+        let _ = rooms::set_active(&self.dirs, &room.id);
+        Some(LobbyOutcome::Selected(room))
+    }
+
+    fn set_join_password(&mut self, password: Option<&str>) {
+        let Some(group) = self.groups.get(self.index).cloned() else {
+            self.mode = LobbyMode::List;
+            return;
+        };
+        let path = crate::config::group_path(&self.dirs, &group.id);
+        let mut profile = GroupProfile::load_at(&path).unwrap_or_default();
+        profile.join_password = match password.filter(|value| !value.is_empty()) {
+            Some(value) => match crate::config::JoinPassword::new(value) {
+                Ok(password) => Some(password),
+                Err(err) => {
+                    self.set_status(format!("设置加入密码失败: {err}"), true);
+                    return;
+                }
+            },
+            None => None,
+        };
+        match profile.save_at(&path) {
+            Ok(()) => {
+                self.mode = LobbyMode::List;
+                self.input.clear();
+                self.cursor = 0;
+                self.set_status(
+                    if profile.join_password.is_some() {
+                        "频道加入密码已设置"
+                    } else {
+                        "频道加入密码已清除"
+                    },
+                    false,
+                );
+            }
+            Err(err) => self.set_status(format!("保存密码失败: {err}"), true),
+        }
+    }
+
+    fn join_lan(
+        &mut self,
+        channel: DiscoveredChannel,
+        password: Option<&str>,
+    ) -> Option<LobbyOutcome> {
+        match crate::lan::request_invite(&channel, password) {
+            Ok(invite) => match crate::lan::save_joined_channel(&self.dirs, &invite, password) {
+                Ok(room) => Some(LobbyOutcome::Selected(room)),
+                Err(err) => {
+                    self.set_status(format!("保存频道失败: {err}"), true);
+                    None
+                }
+            },
+            Err(err) => {
+                self.set_status(format!("加入失败: {err}"), true);
+                None
+            }
+        }
     }
 
     fn insert_text(&mut self, text: &str) {
@@ -2603,10 +2887,49 @@ impl LobbyApp {
                     }
                 }
                 KeyCode::Enter => {
-                    let Some(group) = self.groups.get(self.index) else {
+                    let Some(group) = self.groups.get(self.index).cloned() else {
                         self.set_status("还没有频道，按 c 创建或 j 加入", true);
                         return None;
                     };
+                    if let Some(channel) = self
+                        .lan
+                        .iter()
+                        .find(|channel| channel.room == group.id)
+                        .cloned()
+                    {
+                        let path = crate::config::group_path(&self.dirs, &group.id);
+                        let profile = GroupProfile::load_at(&path).unwrap_or_default();
+                        if let (Some(encoded), Ok(Some(room))) = (
+                            profile.join_password_enc.as_deref(),
+                            rooms::load(&self.dirs, &group.id),
+                        ) {
+                            if let Ok(password) =
+                                crate::lan::open_saved_password(&room.key, encoded)
+                            {
+                                match crate::lan::request_invite(&channel, Some(&password)) {
+                                    Ok(invite) => {
+                                        match crate::lan::save_joined_channel(
+                                            &self.dirs,
+                                            &invite,
+                                            Some(&password),
+                                        ) {
+                                            Ok(room) => {
+                                                return Some(LobbyOutcome::Selected(room));
+                                            }
+                                            Err(err) => self.set_status(
+                                                format!("自动认证后保存失败: {err}"),
+                                                true,
+                                            ),
+                                        }
+                                    }
+                                    Err(err) => self.set_status(
+                                        format!("自动认证失败，使用本地记录进入: {err}"),
+                                        true,
+                                    ),
+                                }
+                            }
+                        }
+                    }
                     match rooms::load(&self.dirs, &group.id) {
                         Ok(Some(room)) => {
                             let _ = rooms::set_active(&self.dirs, &room.id);
@@ -2627,7 +2950,10 @@ impl LobbyApp {
                                 let _ = profile.save(&self.dirs, &room.id);
                             }
                             let _ = rooms::set_active(&self.dirs, &room.id);
-                            return Some(LobbyOutcome::Selected(room));
+                            self.pending_room = Some(room);
+                            self.mode = LobbyMode::CreatePassword;
+                            self.input.clear();
+                            self.cursor = 0;
                         }
                         Err(err) => self.set_status(format!("创建频道失败: {err}"), true),
                     }
@@ -2691,6 +3017,22 @@ impl LobbyApp {
                         ),
                         false,
                     );
+                }
+                KeyCode::Char('f') if !ctrl => {
+                    if self.browser.is_some() {
+                        self.drain_lan();
+                        self.mode = LobbyMode::LanList;
+                        self.lan_index = 0;
+                    } else {
+                        self.set_status("局域网发现不可用", true);
+                    }
+                }
+                KeyCode::Char('p') if !ctrl => {
+                    if self.groups.get(self.index).is_some() {
+                        self.mode = LobbyMode::SetPassword;
+                        self.input.clear();
+                        self.cursor = 0;
+                    }
                 }
                 _ => {}
             },
@@ -2873,6 +3215,115 @@ impl LobbyApp {
                 KeyCode::Char(ch) if !ctrl => self.insert_text(&ch.to_string()),
                 _ => {}
             },
+            LobbyMode::CreatePassword => match key.code {
+                KeyCode::Esc => {
+                    if let Some(outcome) = self.finish_create(None) {
+                        return Some(outcome);
+                    }
+                }
+                KeyCode::Enter => {
+                    let password = self.input.clone();
+                    if let Some(outcome) = self.finish_create(Some(&password)) {
+                        return Some(outcome);
+                    }
+                }
+                KeyCode::Backspace => self.backspace(),
+                KeyCode::Left => {
+                    if self.cursor > 0 {
+                        self.cursor -= 1;
+                    }
+                }
+                KeyCode::Right => {
+                    if self.cursor < self.input.chars().count() {
+                        self.cursor += 1;
+                    }
+                }
+                KeyCode::Char(ch) if !ctrl => self.insert_text(&ch.to_string()),
+                _ => {}
+            },
+            LobbyMode::SetPassword => match key.code {
+                KeyCode::Esc => {
+                    self.mode = LobbyMode::List;
+                    self.input.clear();
+                    self.cursor = 0;
+                }
+                KeyCode::Enter => {
+                    let password = self.input.clone();
+                    self.set_join_password(Some(&password));
+                }
+                KeyCode::Backspace => self.backspace(),
+                KeyCode::Left => {
+                    if self.cursor > 0 {
+                        self.cursor -= 1;
+                    }
+                }
+                KeyCode::Right => {
+                    if self.cursor < self.input.chars().count() {
+                        self.cursor += 1;
+                    }
+                }
+                KeyCode::Char(ch) if !ctrl => self.insert_text(&ch.to_string()),
+                _ => {}
+            },
+            LobbyMode::LanList => match key.code {
+                KeyCode::Esc => {
+                    self.mode = LobbyMode::List;
+                    self.lan_index = 0;
+                }
+                KeyCode::Up => {
+                    if self.lan_index > 0 {
+                        self.lan_index -= 1;
+                    }
+                }
+                KeyCode::Down => {
+                    if self.lan_index + 1 < self.lan.len() {
+                        self.lan_index += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    let Some(channel) = self.lan.get(self.lan_index).cloned() else {
+                        return None;
+                    };
+                    if channel.open {
+                        return self.join_lan(channel, None);
+                    }
+                    self.pending_channel = Some(channel);
+                    self.mode = LobbyMode::LanPassword;
+                    self.input.clear();
+                    self.cursor = 0;
+                }
+                _ => {}
+            },
+            LobbyMode::LanPassword => match key.code {
+                KeyCode::Esc => {
+                    self.mode = LobbyMode::LanList;
+                    self.input.clear();
+                    self.cursor = 0;
+                }
+                KeyCode::Enter => {
+                    let Some(channel) = self.pending_channel.clone() else {
+                        self.mode = LobbyMode::LanList;
+                        return None;
+                    };
+                    let password = self.input.clone();
+                    if let Some(outcome) = self.join_lan(channel, Some(&password)) {
+                        return Some(outcome);
+                    }
+                }
+                KeyCode::Backspace => self.backspace(),
+                KeyCode::Left => {
+                    if self.cursor > 0 {
+                        self.cursor -= 1;
+                    }
+                }
+                KeyCode::Right => {
+                    if self.cursor < self.input.chars().count() {
+                        self.cursor += 1;
+                    }
+                }
+                KeyCode::Char(ch) if !ctrl => self.insert_text(&ch.to_string()),
+                _ => {}
+            },
             LobbyMode::ConfirmDelete => match key.code {
                 KeyCode::Esc => self.mode = LobbyMode::List,
                 KeyCode::Enter | KeyCode::Char('y') => {
@@ -2901,7 +3352,12 @@ impl LobbyApp {
             area,
         );
         let width = 72.min(area.width.saturating_sub(4)).max(24);
-        let height = (self.groups.len() as u16 + 12)
+        let content_len = if self.mode == LobbyMode::LanList {
+            self.lan.len()
+        } else {
+            self.groups.len()
+        };
+        let height = (content_len as u16 + 12)
             .min(area.height.saturating_sub(2))
             .max(12);
         let x = area.x + area.width.saturating_sub(width) / 2;
@@ -2909,7 +3365,37 @@ impl LobbyApp {
         let rect = Rect::new(x, y, width, height);
 
         let mut lines: Vec<Line<'static>> = Vec::new();
-        if self.groups.is_empty() {
+        if self.mode == LobbyMode::LanList {
+            if self.lan.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "正在搜索局域网频道…（需要宿主已进入频道）",
+                    Style::default().fg(Color::Gray),
+                )));
+            } else {
+                for (index, channel) in self.lan.iter().enumerate() {
+                    let selected = index == self.lan_index;
+                    let marker = if selected { "> " } else { "  " };
+                    let access = if channel.open { "开放" } else { "密码" };
+                    let style = if selected {
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "{marker}{:<24} {:<16} {access} {}",
+                            truncate_width(&channel.name, 24),
+                            truncate_width(&channel.host, 16),
+                            &channel.room[..channel.room.len().min(8)]
+                        ),
+                        style,
+                    )));
+                }
+            }
+        } else if self.groups.is_empty() {
             lines.push(Line::from(Span::styled(
                 "还没有保存的频道。",
                 Style::default().fg(Color::Gray),
@@ -2924,6 +3410,11 @@ impl LobbyApp {
                 } else {
                     "  "
                 };
+                let lan_mark = if self.lan.iter().any(|channel| channel.room == group.id) {
+                    "⌁ "
+                } else {
+                    "  "
+                };
                 let style = if selected {
                     Style::default()
                         .fg(Color::Black)
@@ -2935,7 +3426,7 @@ impl LobbyApp {
                 let id = &group.id[..group.id.len().min(8)];
                 lines.push(Line::from(Span::styled(
                     format!(
-                        "{marker}{active}{et_mark}{:<30} {id}",
+                        "{marker}{active}{et_mark}{lan_mark}{:<30} {id}",
                         truncate_width(&group.name, 30)
                     ),
                     style,
@@ -2960,7 +3451,7 @@ impl LobbyApp {
             LobbyMode::List => {
                 lines.push(Line::from(Span::styled(
                     format!(
-                        "↑/↓ 选择 · Enter 进入 · c 创建 · j 加入 · r 重命名 · d 删除 · n 添加节点 · e 内网穿透 · 节点 {} · q 退出",
+                        "↑/↓ 选择 · Enter 进入 · c 创建 · j 加入 · f 局域网 · r 重命名 · d 删除 · n 节点 · e 内网穿透 · p 加入密码 · 节点 {} · q 退出",
                         self.config.easytier.nodes.len()
                     ),
                     Style::default().fg(Color::DarkGray),
@@ -2996,6 +3487,42 @@ impl LobbyApp {
                     Style::default().fg(Color::White),
                 )));
             }
+            LobbyMode::CreatePassword => {
+                lines.push(Line::from(Span::styled(
+                    "设置频道加入密码（直接回车跳过，Esc 跳过）",
+                    Style::default().fg(Color::Cyan),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!("> {}", "*".repeat(self.input.chars().count())),
+                    Style::default().fg(Color::White),
+                )));
+            }
+            LobbyMode::SetPassword => {
+                lines.push(Line::from(Span::styled(
+                    "输入新的加入密码（直接回车清除，Esc 返回）",
+                    Style::default().fg(Color::Cyan),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!("> {}", "*".repeat(self.input.chars().count())),
+                    Style::default().fg(Color::White),
+                )));
+            }
+            LobbyMode::LanList => {
+                lines.push(Line::from(Span::styled(
+                    "↑/↓ 选择 · Enter 加入 · Esc 返回 · 仅显示局域网内已开启的频道",
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+            LobbyMode::LanPassword => {
+                lines.push(Line::from(Span::styled(
+                    "输入频道加入密码后回车（Esc 返回）",
+                    Style::default().fg(Color::Cyan),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!("> {}", "*".repeat(self.input.chars().count())),
+                    Style::default().fg(Color::White),
+                )));
+            }
             LobbyMode::ConfirmDelete => {
                 let name = self
                     .groups
@@ -3024,10 +3551,22 @@ impl LobbyApp {
 
         if matches!(
             self.mode,
-            LobbyMode::Join | LobbyMode::Rename | LobbyMode::AddNode
+            LobbyMode::Join
+                | LobbyMode::Rename
+                | LobbyMode::AddNode
+                | LobbyMode::CreatePassword
+                | LobbyMode::SetPassword
+                | LobbyMode::LanPassword
         ) {
             let status_line = u16::from(self.status.is_some());
-            let cursor_y = y + 1 + self.groups.len() as u16 + 2 + status_line;
+            let cursor_y = if matches!(
+                self.mode,
+                LobbyMode::CreatePassword | LobbyMode::SetPassword | LobbyMode::LanPassword
+            ) {
+                y + 1 + status_line + 1
+            } else {
+                y + 1 + self.groups.len() as u16 + 2 + status_line
+            };
             let cursor_x = x + 3 + self.cursor as u16;
             if cursor_y < area.bottom() && cursor_x < area.right() {
                 frame.set_cursor_position((cursor_x, cursor_y));
@@ -3042,6 +3581,7 @@ pub fn lobby(dirs: RuntimeDirs, identity: Identity, nick: String) -> Result<Opti
     let mut terminal = init_terminal()?;
     let mut app = LobbyApp::new(dirs, identity, nick)?;
     loop {
+        app.drain_lan();
         terminal.draw(|frame| app.draw(frame))?;
         if event::poll(Duration::from_millis(80))? {
             match event::read()? {
@@ -3061,7 +3601,15 @@ pub fn lobby(dirs: RuntimeDirs, identity: Identity, nick: String) -> Result<Opti
                     }
                 }
                 Event::Paste(text) => {
-                    if matches!(app.mode, LobbyMode::Join | LobbyMode::Rename) {
+                    if matches!(
+                        app.mode,
+                        LobbyMode::Join
+                            | LobbyMode::Rename
+                            | LobbyMode::AddNode
+                            | LobbyMode::CreatePassword
+                            | LobbyMode::SetPassword
+                            | LobbyMode::LanPassword
+                    ) {
                         app.insert_text(&text);
                     }
                 }

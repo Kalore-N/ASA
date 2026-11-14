@@ -73,7 +73,10 @@ pub struct NodeConfig {
     pub bootstrap: Vec<SocketAddr>,
     /// 加入频道后自动向在线成员拉取最近消息。
     pub sync_history: bool,
+    /// 每次同步请求的条数；0 表示全部（最多 5000 条）。
     pub sync_count: u32,
+    /// 启动时从本地 JSONL 加载并显示的历史条数；0 表示不加载。
+    pub history_limit: usize,
     /// 中继服务器地址（可多个，当前使用第一个可解析的）。
     pub relays: Vec<String>,
 }
@@ -373,6 +376,54 @@ impl Node {
 
         let _ = std::fs::create_dir_all(&cfg.downloads);
         let history = History::new(cfg.dirs.logs.clone(), cfg.room_id.clone())?;
+
+        // 启动时把本地历史加载到界面，并填充同步缓存。
+        // 旧日志没有完整公钥时，本机消息按短 ID 还原；其他成员仅在
+        // 能匹配到完整公钥时才进入同步缓存。
+        let self_short = short_id(&cfg.pubkey);
+        let self_pubkey = cfg.pubkey.clone();
+        let local_chats = if cfg.history_limit == 0 {
+            Vec::new()
+        } else {
+            history.load_recent(cfg.history_limit, |from_id| {
+                if from_id == self_short {
+                    Some(self_pubkey.clone())
+                } else {
+                    None
+                }
+            })
+        };
+        let mut initial_recent = VecDeque::new();
+        for chat in &local_chats {
+            let from = chat.pubkey.clone().unwrap_or_else(|| chat.from_id.clone());
+            let mine = from == cfg.pubkey;
+            let _ = ev_tx.send(NodeEvent::Chat {
+                from: from.clone(),
+                nick: chat.from.clone(),
+                text: chat.text.clone(),
+                ts: chat.ts,
+                mine,
+                id: chat.id.clone(),
+                mentions: chat.mentions.clone(),
+                reply: chat.reply.clone(),
+                history: true,
+            });
+            if let Some(pubkey) = &chat.pubkey {
+                initial_recent.push_back(SyncMessage {
+                    id: chat.id.clone(),
+                    from: pubkey.clone(),
+                    nick: chat.from.clone(),
+                    text: chat.text.clone(),
+                    ts: chat.ts,
+                    mentions: chat.mentions.clone(),
+                    reply: chat.reply.clone(),
+                });
+            }
+        }
+        while initial_recent.len() > 500 {
+            initial_recent.pop_front();
+        }
+
         let state = NodeState {
             ctx: ctx.clone(),
             room_created: cfg.room_created,
@@ -405,9 +456,9 @@ impl Node {
             relay_tx,
             relay_tried: HashMap::new(),
             self_ips,
-            recent: VecDeque::new(),
+            recent: initial_recent,
             sync_history: cfg.sync_history,
-            sync_count: cfg.sync_count.clamp(1, 200),
+            sync_count: cfg.sync_count,
         };
 
         let handle = NodeHandle {
@@ -984,7 +1035,7 @@ impl NodeState {
     ) {
         let mine = from == self.ctx.pubkey;
         self.history
-            .append_chat_at(nick, &short_id(from), text, id, ts, reply, mentions);
+            .append_chat_at(nick, &short_id(from), from, text, id, ts, reply, mentions);
         self.recent.push_back(SyncMessage {
             id: id.to_string(),
             from: from.to_string(),
@@ -1015,7 +1066,11 @@ impl NodeState {
             self.info("当前没有在线成员，无法更新聊天内容");
             return;
         }
-        let limit = self.sync_count;
+        let limit = if self.sync_count == 0 {
+            0
+        } else {
+            self.sync_count.clamp(1, 5000)
+        };
         let peers: Vec<String> = self.peers.keys().cloned().collect();
         let mut sent = 0;
         for peer in peers {
@@ -1023,7 +1078,12 @@ impl NodeState {
                 sent += 1;
             }
         }
-        self.info(format!("已向 {sent} 位成员请求最近 {limit} 条消息"));
+        let label = if limit == 0 {
+            "全部".to_string()
+        } else {
+            limit.to_string()
+        };
+        self.info(format!("已向 {sent} 位成员请求最近 {label} 条消息"));
     }
 
     fn on_envelope(&mut self, conn_peer: &str, env: proto::Envelope) {
@@ -1074,16 +1134,46 @@ impl NodeState {
                 );
             }
             Payload::SyncRequest { limit } => {
-                let limit = limit.clamp(1, 200) as usize;
-                let mut messages: Vec<SyncMessage> =
-                    self.recent.iter().rev().take(limit).cloned().collect();
-                messages.reverse();
-                if !messages.is_empty() {
-                    let _ = self.send_to(&from, &Payload::SyncBatch { messages });
+                let limit = if limit == 0 {
+                    5000
+                } else {
+                    limit.clamp(1, 5000) as usize
+                };
+                let mut known: HashMap<String, String> = HashMap::new();
+                known.insert(short_id(&self.ctx.pubkey), self.ctx.pubkey.clone());
+                for pubkey in self.peers.keys() {
+                    known.insert(short_id(pubkey), pubkey.clone());
                 }
+                for pubkey in self.known.keys() {
+                    known.insert(short_id(pubkey), pubkey.clone());
+                }
+                let chats = self
+                    .history
+                    .load_recent(limit, |from_id| known.get(from_id).cloned());
+                let mut messages: Vec<SyncMessage> = chats
+                    .into_iter()
+                    .filter_map(|chat| {
+                        let from = chat.pubkey?;
+                        Some(SyncMessage {
+                            id: chat.id,
+                            from,
+                            nick: chat.from,
+                            text: chat.text,
+                            ts: chat.ts,
+                            mentions: chat.mentions,
+                            reply: chat.reply,
+                        })
+                    })
+                    .collect();
+                if messages.is_empty() {
+                    messages = self.recent.iter().rev().take(limit).cloned().collect();
+                    messages.reverse();
+                }
+                let _ = self.send_to(&from, &Payload::SyncBatch { messages });
             }
             Payload::SyncBatch { messages } => {
-                for message in messages.into_iter().take(200) {
+                let mut synced = 0usize;
+                for message in messages.into_iter().take(5000) {
                     if message.from.len() != 64
                         || message.id.is_empty()
                         || !self.mark_seen(&message.id)
@@ -1121,6 +1211,12 @@ impl NodeState {
                         reply.as_ref(),
                         true,
                     );
+                    synced += 1;
+                }
+                if synced == 0 {
+                    self.info("没有可同步的聊天记录");
+                } else {
+                    self.info(format!("已同步 {synced} 条聊天记录"));
                 }
             }
             Payload::Presence {

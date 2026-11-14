@@ -18,6 +18,7 @@ use serde_json::json;
 
 use crate::config::{Config, GroupProfile};
 use crate::identity::Identity;
+use crate::lan::JoinServer;
 use crate::node::{Cmd, Node, NodeConfig, NodeEvent, NodeHandle};
 use crate::paths::RuntimeDirs;
 use crate::proto::ReplyRef;
@@ -29,6 +30,7 @@ struct Bridge {
     runtime: tokio::runtime::Runtime,
     handle: NodeHandle,
     status: serde_json::Value,
+    _join_server: Option<JoinServer>,
 }
 
 static BRIDGE: Mutex<Option<Bridge>> = Mutex::new(None);
@@ -61,6 +63,9 @@ struct StartConfig {
     /// 写入邀请码的 EasyTier 节点。
     #[serde(default)]
     et_nodes: Vec<String>,
+    /// 创建频道时设置的加入密码（明文只用于本次启动）。
+    #[serde(default)]
+    join_password: Option<String>,
 }
 
 fn default_mode() -> String {
@@ -172,6 +177,17 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
         profile.nick = Some(nick.clone());
         let _ = profile.save(&dirs, &room.id);
     }
+    if cfg.mode == "create" {
+        if let Some(password) = cfg
+            .join_password
+            .as_deref()
+            .map(str::trim)
+            .filter(|password| !password.is_empty())
+        {
+            profile.join_password = Some(crate::config::JoinPassword::new(password)?);
+            profile.save(&dirs, &room.id)?;
+        }
+    }
     let downloads = profile.download_dir(&config, &dirs);
     let max_file = cfg
         .max_file_mb
@@ -280,6 +296,7 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
         bootstrap,
         sync_history: config.sync.enabled,
         sync_count: config.sync.count,
+        history_limit: config.ui.history_lines,
         relays,
     };
 
@@ -289,6 +306,24 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
         .build()
         .context("创建异步运行时失败")?;
     let handle = runtime.block_on(Node::start(node_cfg))?;
+    let channel_name = profile
+        .name
+        .clone()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| format!("频道 {}", &room.id[..room.id.len().min(8)]));
+    let join_server = if room.creator == handle.pubkey || profile.join_password.is_some() {
+        JoinServer::start(
+            &room,
+            &channel_name,
+            &nick,
+            handle.advertise.port(),
+            &handle.invite,
+            profile.join_password.clone(),
+        )
+        .ok()
+    } else {
+        None
+    };
     let groups = crate::rooms::list(&dirs).unwrap_or_default();
     let info = json!({
         "ok": true,
@@ -315,6 +350,7 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
         runtime,
         handle,
         status,
+        _join_server: join_server,
     });
     Ok(info)
 }
@@ -468,6 +504,7 @@ enum AndroidCommand {
         #[serde(default)]
         reason: Option<String>,
     },
+    Sync,
     Quit,
 }
 
@@ -494,6 +531,7 @@ fn send_command_inner(json_text: &str) -> String {
             let _ = reason;
             Cmd::Reject(xfer)
         }
+        AndroidCommand::Sync => Cmd::Sync,
         AndroidCommand::Quit => Cmd::Quit,
     };
     let bridge = BRIDGE.lock().unwrap();
@@ -577,6 +615,64 @@ pub extern "system" fn Java_com_asa_chat_NativeBridge_groups<'local>(
         Err(err) => fail(err),
     };
     to_jstring(&mut env, result)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_asa_chat_NativeBridge_discoverChannels<'local>(
+    mut env: jni::JNIEnv<'local>,
+    _this: jni::objects::JObject<'local>,
+    timeout_ms: jni::sys::jint,
+) -> jni::sys::jstring {
+    let timeout = Duration::from_millis(timeout_ms.clamp(200, 10_000) as u64);
+    let result = match crate::lan::discover(timeout) {
+        Ok(channels) => json!({ "ok": true, "channels": channels }).to_string(),
+        Err(err) => fail(err),
+    };
+    to_jstring(&mut env, result)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_asa_chat_NativeBridge_joinDiscoveredChannel<'local>(
+    mut env: jni::JNIEnv<'local>,
+    _this: jni::objects::JObject<'local>,
+    data_dir: jni::objects::JString<'local>,
+    join_addr: jni::objects::JString<'local>,
+    room_id: jni::objects::JString<'local>,
+    password: jni::objects::JString<'local>,
+) -> jni::sys::jstring {
+    let result = (|| -> Result<serde_json::Value> {
+        let root = PathBuf::from(read_string(&mut env, &data_dir)?);
+        let join_addr = read_string(&mut env, &join_addr)?;
+        let room_id = read_string(&mut env, &room_id)?;
+        let password = read_string(&mut env, &password)?;
+        let join_addr: SocketAddr = join_addr
+            .parse()
+            .with_context(|| format!("加入地址无效: {join_addr}"))?;
+        let dirs = RuntimeDirs::ensure(&root)?;
+        let channel = crate::lan::DiscoveredChannel {
+            room: room_id,
+            name: String::new(),
+            host: String::new(),
+            addr: join_addr,
+            join_addr,
+            open: password.is_empty(),
+        };
+        let password = if password.is_empty() {
+            None
+        } else {
+            Some(password.as_str())
+        };
+        let invite = crate::lan::request_invite(&channel, password)?;
+        let room = crate::lan::save_joined_channel(&dirs, &invite, password)?;
+        Ok(json!({
+            "ok": true,
+            "room_id": room.id,
+        }))
+    })();
+    match result {
+        Ok(value) => to_jstring(&mut env, value.to_string()),
+        Err(err) => to_jstring(&mut env, fail(err)),
+    }
 }
 
 #[no_mangle]

@@ -32,6 +32,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,8 +43,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.asa.chat.LanChannel
 import com.asa.chat.SavedGroup
 import com.asa.chat.UiState
+import kotlinx.coroutines.delay
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -61,9 +64,20 @@ fun GroupListScreen(
     onJoin: () -> Unit,
     onRename: (String, String) -> Unit,
     onToggleEasytier: (String, Boolean) -> Unit,
+    onRefreshLan: () -> Unit,
+    onJoinLan: (LanChannel, String) -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     var renameTarget by remember { mutableStateOf<SavedGroup?>(null) }
+    var lanTarget by remember { mutableStateOf<LanChannel?>(null) }
+    var lanPassword by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            onRefreshLan()
+            delay(4000)
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -89,6 +103,68 @@ fun GroupListScreen(
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            if (state.lanChannels.isNotEmpty() || state.lanLoading) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text("局域网频道", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    if (state.lanLoading) {
+                        Text("搜索中…", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                state.lanChannels.take(4).forEach { channel ->
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                if (channel.open) {
+                                    onJoinLan(channel, "")
+                                } else {
+                                    lanTarget = channel
+                                    lanPassword = ""
+                                }
+                            },
+                        shape = ItemShape,
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    channel.name,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    buildString {
+                                        append(channel.host.ifBlank { "未知宿主" })
+                                        append(" · ")
+                                        append(channel.room.take(8))
+                                        if (!channel.open) append(" · 需要密码")
+                                    },
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Text(if (channel.open) "加入" else "解锁", fontSize = 12.sp)
+                        }
+                    }
+                }
+                if (state.lanChannels.isEmpty()) {
+                    Text(
+                        "正在搜索局域网频道…",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                HorizontalDivider()
+            }
+
             if (state.groups.isEmpty()) {
                 Text(
                     "还没有保存的频道。",
@@ -109,6 +185,7 @@ fun GroupListScreen(
                     items(state.groups, key = { it.id }) { group ->
                         GroupRow(
                             group = group,
+                            lanDiscovered = state.lanChannels.any { it.room == group.id },
                             onEnter = { onEnter(group.id) },
                             onRename = { renameTarget = group },
                             onToggleEasytier = { enabled ->
@@ -165,11 +242,42 @@ fun GroupListScreen(
             },
         )
     }
+
+    lanTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { lanTarget = null },
+            shape = ItemShape,
+            title = { Text("加入「${target.name}」") },
+            text = {
+                OutlinedTextField(
+                    value = lanPassword,
+                    onValueChange = { lanPassword = it },
+                    singleLine = true,
+                    shape = FieldShape,
+                    label = { Text("频道加入密码") },
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Password,
+                    ),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val targetChannel = target
+                    lanTarget = null
+                    onJoinLan(targetChannel, lanPassword)
+                }) { Text("加入") }
+            },
+            dismissButton = {
+                TextButton(onClick = { lanTarget = null }) { Text("取消") }
+            },
+        )
+    }
 }
 
 @Composable
 private fun GroupRow(
     group: SavedGroup,
+    lanDiscovered: Boolean,
     onEnter: () -> Unit,
     onRename: () -> Unit,
     onToggleEasytier: (Boolean) -> Unit,
@@ -202,6 +310,7 @@ private fun GroupRow(
                         append("频道 ")
                         append(group.id.take(8))
                         if (group.easytierEnabled) append(" · EasyTier")
+                        if (lanDiscovered) append(" · 局域网已发现")
                         if (group.active) append(" · 当前频道")
                         if (group.lastUsed > 0) {
                             append(" · ")

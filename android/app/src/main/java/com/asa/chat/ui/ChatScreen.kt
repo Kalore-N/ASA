@@ -107,6 +107,7 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
     var showMembers by remember { mutableStateOf(false) }
     var showInvite by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
+    var showTransfers by remember { mutableStateOf(false) }
     var showNick by remember { mutableStateOf(false) }
     var showRename by remember { mutableStateOf(false) }
     var showConnect by remember { mutableStateOf(false) }
@@ -196,6 +197,27 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
                             expanded = showMenu,
                             onDismissRequest = { showMenu = false },
                         ) {
+                            DropdownMenuItem(
+                                text = { Text("同步聊天记录") },
+                                onClick = {
+                                    showMenu = false
+                                    vm.sync()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("进行中的传输") },
+                                onClick = {
+                                    showMenu = false
+                                    showTransfers = true
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("打开下载目录") },
+                                onClick = {
+                                    showMenu = false
+                                    vm.openDownloads()
+                                },
+                            )
                             DropdownMenuItem(
                                 text = { Text("发送文件") },
                                 onClick = {
@@ -345,6 +367,26 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
             },
             dismissButton = {
                 TextButton(onClick = { showInvite = false }) { Text("关闭") }
+            },
+        )
+    }
+
+    if (showTransfers) {
+        AlertDialog(
+            onDismissRequest = { showTransfers = false },
+            shape = DialogShape,
+            title = { Text("进行中的传输") },
+            text = {
+                if (state.transfers.isEmpty()) {
+                    Text("暂无进行中的传输", fontSize = 13.sp)
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        state.transfers.forEach { TransferRow(it) }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showTransfers = false }) { Text("关闭") }
             },
         )
     }
