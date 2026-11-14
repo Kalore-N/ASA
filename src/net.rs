@@ -62,6 +62,8 @@ pub enum NetEvent {
     },
     /// 中继返回的同群在线节点。
     RelayPeers(Vec<crate::relay::RelayPeer>),
+    /// 已解密的 UDP 语音帧。
+    Voice(Vec<u8>),
     Notice(String),
 }
 

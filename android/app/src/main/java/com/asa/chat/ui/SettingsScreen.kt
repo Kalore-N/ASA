@@ -73,6 +73,9 @@ fun SettingsScreen(
     var relays by remember { mutableStateOf(config.relays.joinToString("\n")) }
     var etNodes by remember { mutableStateOf(EasytierStore.load(context)) }
     var etInput by remember { mutableStateOf("") }
+    var voiceEnabled by remember { mutableStateOf(config.voiceEnabled) }
+    var voicePushToTalk by remember { mutableStateOf(config.voicePushToTalk) }
+    var voiceRecordDir by remember { mutableStateOf(config.voiceRecordDir) }
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     val effectivePath = downloadDir.ifBlank { ConfigStore.defaultDownloadDir(context) }
@@ -106,6 +109,9 @@ fun SettingsScreen(
                                 relays = relays.split('\n', ',')
                                     .map { it.trim() }
                                     .filter { it.isNotEmpty() },
+                                voiceEnabled = voiceEnabled,
+                                voicePushToTalk = voicePushToTalk,
+                                voiceRecordDir = voiceRecordDir.trim(),
                             ),
                         )
                     }) { Text("保存") }
@@ -151,6 +157,33 @@ fun SettingsScreen(
                 singleLine = true,
                 shape = FieldShape,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            )
+
+            HorizontalDivider()
+            Text("语音", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp)
+            SettingSwitch(
+                title = "启用语音通话和语音消息",
+                checked = voiceEnabled,
+                onCheckedChange = { voiceEnabled = it },
+            )
+            SettingSwitch(
+                title = "TUI 使用按住说话",
+                checked = voicePushToTalk,
+                onCheckedChange = { voicePushToTalk = it },
+            )
+            OutlinedTextField(
+                value = voiceRecordDir,
+                onValueChange = { voiceRecordDir = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("语音保存目录（可选）") },
+                placeholder = { Text("留空使用下载目录/voice") },
+                singleLine = true,
+                shape = FieldShape,
+            )
+            Text(
+                "通话使用 PCM 16kHz 单声道；UDP 不通时自动回退 TCP。语音消息保存为 WAV。",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
             HorizontalDivider()

@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write as _;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender as StdSender;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -108,6 +109,24 @@ pub enum Cmd {
     SetRoomName(String),
     /// 向在线成员请求最近聊天记录。
     Sync,
+    /// 发起 1:1 语音通话。
+    Call {
+        target: String,
+    },
+    /// 接听来电。
+    AcceptCall {
+        call_id: String,
+    },
+    /// 拒绝来电。
+    RejectCall {
+        call_id: String,
+    },
+    /// 挂断当前通话。
+    HangupCall,
+    /// 本地采集的一帧 PCM（20ms，16kHz 单声道）。
+    AudioFrame {
+        data: Vec<u8>,
+    },
     /// 连接 `ip:port` 或 `host:port`。
     Connect(String),
     DialAddr(SocketAddr),
@@ -196,6 +215,35 @@ pub enum NodeEvent {
         ok: bool,
         msg: String,
     },
+    /// 呼叫已发出/对方正在响铃。
+    CallRinging {
+        peer: String,
+        nick: String,
+        call_id: String,
+    },
+    /// 收到来电，等待接听/拒绝。
+    IncomingCall {
+        peer: String,
+        nick: String,
+        call_id: String,
+    },
+    /// 通话已建立。
+    CallAccepted {
+        peer: String,
+        nick: String,
+        call_id: String,
+    },
+    /// 通话结束/被拒绝/挂断。
+    CallEnded {
+        peer: String,
+        nick: String,
+        call_id: String,
+        reason: String,
+    },
+    /// 收到一帧 PCM 音频。
+    AudioFrame {
+        data: Vec<u8>,
+    },
     /// 本机频道名称变更。
     RoomName(String),
     Info(String),
@@ -229,6 +277,88 @@ struct Peer {
 struct Known {
     nick: String,
     addr: Option<SocketAddr>,
+}
+
+struct CallSession {
+    id: String,
+    peer: String,
+    local_port: u16,
+    remote_ip: Option<IpAddr>,
+    remote_port: Option<u16>,
+    socket: Arc<std::net::UdpSocket>,
+    stop: Arc<AtomicBool>,
+    recv: Option<std::thread::JoinHandle<()>>,
+    key: [u8; 32],
+    out_seq: u64,
+    last_udp: Instant,
+    tcp_fallback: bool,
+    outgoing: bool,
+    pending: bool,
+}
+
+impl Drop for CallSession {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+fn call_key(room: &RoomKey, call_id: &str, a: &str, b: &str) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"asa-voice-v1");
+    hasher.update(room);
+    hasher.update(call_id.as_bytes());
+    let (first, second) = if a < b { (a, b) } else { (b, a) };
+    hasher.update(first.as_bytes());
+    hasher.update(second.as_bytes());
+    let digest = hasher.finalize();
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&digest[..32]);
+    key
+}
+
+fn voice_nonce(direction: u8, seq: u64) -> [u8; 12] {
+    let mut nonce = [0u8; 12];
+    nonce[0] = direction;
+    nonce[4..].copy_from_slice(&seq.to_be_bytes());
+    nonce
+}
+
+fn spawn_voice_recv(
+    socket: Arc<std::net::UdpSocket>,
+    stop: Arc<AtomicBool>,
+    key: [u8; 32],
+    direction: u8,
+    net_tx: mpsc::Sender<NetEvent>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        let mut in_seq: Option<u64> = None;
+        while !stop.load(Ordering::Relaxed) {
+            match socket.recv_from(&mut buf) {
+                Ok((len, _addr)) => {
+                    if len < 8 + 16 {
+                        continue;
+                    }
+                    let seq = u64::from_be_bytes(buf[..8].try_into().unwrap_or([0u8; 8]));
+                    if in_seq.map(|last| seq <= last).unwrap_or(false) {
+                        continue;
+                    }
+                    let nonce = voice_nonce(direction, seq);
+                    if let Ok(plain) = crypto::open_nonce(&key, b"asa-voice", &nonce, &buf[8..len])
+                    {
+                        in_seq = Some(seq);
+                        if plain.len() <= 4096 {
+                            let _ = net_tx.try_send(NetEvent::Voice(plain));
+                        }
+                    }
+                }
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::WouldBlock
+                        || err.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(_) => break,
+            }
+        }
+    })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -459,6 +589,7 @@ impl Node {
             recent: initial_recent,
             sync_history: cfg.sync_history,
             sync_count: cfg.sync_count,
+            call: None,
         };
 
         let handle = NodeHandle {
@@ -517,6 +648,7 @@ struct NodeState {
     recent: VecDeque<SyncMessage>,
     sync_history: bool,
     sync_count: u32,
+    call: Option<CallSession>,
 }
 
 impl NodeState {
@@ -582,6 +714,7 @@ impl NodeState {
     }
 
     fn shutdown(&mut self) {
+        self.end_call("退出");
         if let Ok(raw) = proto::encode_frame(&Frame::Bye {
             reason: "正常退出".to_string(),
         }) {
@@ -613,6 +746,11 @@ impl NodeState {
             Cmd::SetNick(nick) => self.set_nick(nick),
             Cmd::SetRoomName(name) => self.set_room_name(name),
             Cmd::Sync => self.request_history(),
+            Cmd::Call { target } => self.start_call(&target),
+            Cmd::AcceptCall { call_id } => self.accept_call(&call_id),
+            Cmd::RejectCall { call_id } => self.reject_call(&call_id),
+            Cmd::HangupCall => self.hangup_call("本机挂断"),
+            Cmd::AudioFrame { data } => self.send_audio_frame(data),
             Cmd::Connect(text) => self.connect_text(&text),
             Cmd::DialAddr(addr) => {
                 if is_self_target(self.ctx.listen, &self.self_ips, addr) {
@@ -828,6 +966,12 @@ impl NodeState {
                     }
                 }
             }
+            NetEvent::Voice(data) => {
+                if let Some(call) = self.call.as_mut() {
+                    call.last_udp = Instant::now();
+                    let _ = self.ev.send(NodeEvent::AudioFrame { data });
+                }
+            }
             NetEvent::Notice(text) => {
                 // 握手阶段的失败提示，只放状态栏，不写入聊天记录。
                 self.info(text);
@@ -912,6 +1056,14 @@ impl NodeState {
         if let Some(removed) = self.peers.remove(peer) {
             let _ = reason;
             self.system(format!("{} 离线了 ({})", removed.nick, short_id(peer)));
+        }
+        if self
+            .call
+            .as_ref()
+            .map(|call| call.peer == peer)
+            .unwrap_or(false)
+        {
+            self.end_call("对方离线");
         }
         self.emit_members();
         self.recompute_host();
@@ -1059,6 +1211,191 @@ impl NodeState {
             reply: reply.cloned(),
             history,
         });
+    }
+
+    fn start_call(&mut self, target: &str) {
+        if self.call.is_some() {
+            self.info("当前已有通话");
+            return;
+        }
+        let Some(peer) = self.peers.get(target) else {
+            self.info("对方不在线，无法发起通话");
+            return;
+        };
+        let listen = peer.listen;
+        let call_id = hex::encode(crypto::random_bytes::<8>());
+        let key = call_key(&self.ctx.key, &call_id, &self.ctx.pubkey, target);
+        let socket = match std::net::UdpSocket::bind("0.0.0.0:0") {
+            Ok(socket) => socket,
+            Err(err) => {
+                self.info(format!("创建语音 UDP 失败: {err}"));
+                return;
+            }
+        };
+        let _ = socket.set_read_timeout(Some(Duration::from_millis(200)));
+        let port = socket.local_addr().map(|addr| addr.port()).unwrap_or(0);
+        let socket = Arc::new(socket);
+        let stop = Arc::new(AtomicBool::new(false));
+        let recv = spawn_voice_recv(socket.clone(), stop.clone(), key, 2, self.net_tx.clone());
+        let nick = self.nick_of(target);
+        self.call = Some(CallSession {
+            id: call_id.clone(),
+            peer: target.to_string(),
+            local_port: port,
+            remote_ip: listen.map(|addr| addr.ip()),
+            remote_port: None,
+            socket,
+            stop,
+            recv: Some(recv),
+            key,
+            out_seq: 0,
+            last_udp: Instant::now(),
+            tcp_fallback: listen.is_none(),
+            outgoing: true,
+            pending: true,
+        });
+        if let Err(err) = self.send_to(
+            target,
+            &Payload::CallInvite {
+                call_id: call_id.clone(),
+                port,
+            },
+        ) {
+            self.info(format!("发送通话邀请失败: {err}"));
+            self.end_call("邀请发送失败");
+            return;
+        }
+        let _ = self.ev.send(NodeEvent::CallRinging {
+            peer: target.to_string(),
+            nick,
+            call_id,
+        });
+    }
+
+    fn accept_call(&mut self, call_id: &str) {
+        let Some(call) = self.call.as_mut() else {
+            return;
+        };
+        if call.id != call_id || !call.pending {
+            return;
+        }
+        let peer = call.peer.clone();
+        let port = call.local_port;
+        call.pending = false;
+        call.last_udp = Instant::now();
+        let nick = self.nick_of(&peer);
+        if let Err(err) = self.send_to(
+            &peer,
+            &Payload::CallAccept {
+                call_id: call_id.to_string(),
+                port,
+            },
+        ) {
+            self.info(format!("接听失败: {err}"));
+            self.end_call("接听失败");
+            return;
+        }
+        let _ = self.ev.send(NodeEvent::CallAccepted {
+            peer,
+            nick,
+            call_id: call_id.to_string(),
+        });
+    }
+
+    fn reject_call(&mut self, call_id: &str) {
+        if let Some(call) = self.call.as_ref() {
+            if call.id == call_id {
+                let peer = call.peer.clone();
+                let _ = self.send_to(
+                    &peer,
+                    &Payload::CallReject {
+                        call_id: call_id.to_string(),
+                        reason: "对方拒绝".to_string(),
+                    },
+                );
+            }
+        }
+        self.end_call("已拒绝");
+    }
+
+    fn hangup_call(&mut self, reason: &str) {
+        if let Some(call) = self.call.as_ref() {
+            let peer = call.peer.clone();
+            let _ = self.send_to(
+                &peer,
+                &Payload::CallHangup {
+                    call_id: call.id.clone(),
+                },
+            );
+        }
+        self.end_call(reason);
+    }
+
+    fn send_audio_frame(&mut self, data: Vec<u8>) {
+        if data.is_empty() {
+            return;
+        }
+        let Some(call) = self.call.as_mut() else {
+            return;
+        };
+        if call.pending {
+            return;
+        }
+        let peer = call.peer.clone();
+        let call_id = call.id.clone();
+        let seq = call.out_seq;
+        call.out_seq = call.out_seq.wrapping_add(1);
+        let mut sent = false;
+        if !call.tcp_fallback {
+            if let (Some(ip), Some(port)) = (call.remote_ip, call.remote_port) {
+                let direction = if call.outgoing { 1 } else { 2 };
+                let nonce = voice_nonce(direction, seq);
+                if let Ok(ciphertext) = crypto::seal_nonce(&call.key, b"asa-voice", &nonce, &data) {
+                    let mut packet = Vec::with_capacity(8 + ciphertext.len());
+                    packet.extend_from_slice(&seq.to_be_bytes());
+                    packet.extend_from_slice(&ciphertext);
+                    if call
+                        .socket
+                        .send_to(&packet, SocketAddr::new(ip, port))
+                        .is_ok()
+                    {
+                        sent = true;
+                    }
+                }
+            }
+        }
+        if !sent {
+            call.tcp_fallback = true;
+            let encoded = crypto::b64e(&data);
+            if let Err(err) = self.send_to(
+                &peer,
+                &Payload::VoiceFrame {
+                    call_id,
+                    seq,
+                    data: encoded,
+                },
+            ) {
+                self.info(format!("语音帧发送失败: {err}"));
+            }
+        }
+    }
+
+    fn end_call(&mut self, reason: &str) {
+        let Some(mut call) = self.call.take() else {
+            return;
+        };
+        call.stop.store(true, Ordering::Relaxed);
+        if let Some(recv) = call.recv.take() {
+            let _ = recv.join();
+        }
+        let nick = self.nick_of(&call.peer);
+        let _ = self.ev.send(NodeEvent::CallEnded {
+            peer: call.peer.clone(),
+            nick,
+            call_id: call.id.clone(),
+            reason: reason.to_string(),
+        });
+        self.info(format!("通话结束: {reason}"));
     }
 
     fn request_history(&mut self) {
@@ -1217,6 +1554,118 @@ impl NodeState {
                     self.info("没有可同步的聊天记录");
                 } else {
                     self.info(format!("已同步 {synced} 条聊天记录"));
+                }
+            }
+            Payload::CallInvite { call_id, port } => {
+                if self.call.is_some() {
+                    let _ = self.send_to(
+                        &from,
+                        &Payload::CallReject {
+                            call_id,
+                            reason: "对方忙".to_string(),
+                        },
+                    );
+                    return;
+                }
+                let key = call_key(&self.ctx.key, &call_id, &self.ctx.pubkey, &from);
+                let socket = match std::net::UdpSocket::bind("0.0.0.0:0") {
+                    Ok(socket) => socket,
+                    Err(err) => {
+                        self.info(format!("创建语音 UDP 失败: {err}"));
+                        return;
+                    }
+                };
+                let _ = socket.set_read_timeout(Some(Duration::from_millis(200)));
+                let local_port = socket.local_addr().map(|addr| addr.port()).unwrap_or(0);
+                let socket = Arc::new(socket);
+                let stop = Arc::new(AtomicBool::new(false));
+                let recv =
+                    spawn_voice_recv(socket.clone(), stop.clone(), key, 1, self.net_tx.clone());
+                let remote_ip = self
+                    .peers
+                    .get(&from)
+                    .and_then(|peer| peer.listen)
+                    .map(|addr| addr.ip());
+                self.call = Some(CallSession {
+                    id: call_id.clone(),
+                    peer: from.clone(),
+                    local_port,
+                    remote_ip,
+                    remote_port: Some(port),
+                    socket,
+                    stop,
+                    recv: Some(recv),
+                    key,
+                    out_seq: 0,
+                    last_udp: Instant::now(),
+                    tcp_fallback: remote_ip.is_none(),
+                    outgoing: false,
+                    pending: true,
+                });
+                let nick = self.nick_of(&from);
+                let _ = self.ev.send(NodeEvent::IncomingCall {
+                    peer: from.clone(),
+                    nick,
+                    call_id,
+                });
+            }
+            Payload::CallAccept { call_id, port } => {
+                let mut accepted = false;
+                if let Some(call) = self.call.as_mut() {
+                    if call.id == call_id && call.outgoing && call.pending {
+                        call.remote_port = Some(port);
+                        call.pending = false;
+                        call.last_udp = Instant::now();
+                        accepted = true;
+                    }
+                }
+                if accepted {
+                    let peer = self
+                        .call
+                        .as_ref()
+                        .map(|call| call.peer.clone())
+                        .unwrap_or_default();
+                    let nick = self.nick_of(&peer);
+                    let _ = self.ev.send(NodeEvent::CallAccepted {
+                        peer,
+                        nick,
+                        call_id,
+                    });
+                }
+            }
+            Payload::CallReject { call_id, reason } => {
+                if self
+                    .call
+                    .as_ref()
+                    .map(|call| call.id == call_id)
+                    .unwrap_or(false)
+                {
+                    self.end_call(&format!("对方拒绝: {reason}"));
+                }
+            }
+            Payload::CallHangup { call_id } => {
+                if self
+                    .call
+                    .as_ref()
+                    .map(|call| call.id == call_id)
+                    .unwrap_or(false)
+                {
+                    self.end_call("对方挂断");
+                }
+            }
+            Payload::VoiceFrame { call_id, seq, data } => {
+                let _ = seq;
+                if self
+                    .call
+                    .as_ref()
+                    .map(|call| call.id == call_id)
+                    .unwrap_or(false)
+                {
+                    if let Ok(bytes) = crypto::b64d(&data) {
+                        if bytes.len() <= 4096 {
+                            let _ = self.ev.send(NodeEvent::AudioFrame { data: bytes });
+                        }
+                    }
                 }
             }
             Payload::Presence {
@@ -1498,6 +1947,15 @@ impl NodeState {
     // ---------------------------------------------------------------- 定时任务
 
     fn on_tick(&mut self) {
+        if let Some(call) = self.call.as_mut() {
+            if !call.pending
+                && !call.tcp_fallback
+                && call.last_udp.elapsed() > Duration::from_secs(2)
+            {
+                call.tcp_fallback = true;
+                self.info("UDP 音频不可用，已回退 TCP");
+            }
+        }
         let now = Instant::now();
         self.relay_tried
             .retain(|_, tried| now.duration_since(*tried) < Duration::from_secs(60));

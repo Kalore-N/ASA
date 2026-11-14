@@ -37,6 +37,7 @@ object EasytierStore {
     }
 
     fun load(context: Context): List<String> {
+        ConfigStore.ensureFull(context)
         val file = configFile(context)
         if (!file.exists()) return emptyList()
         return runCatching {
@@ -67,6 +68,7 @@ object EasytierStore {
     }
 
     fun save(context: Context, nodes: List<String>) {
+        ConfigStore.ensureFull(context)
         val file = configFile(context)
         val root = runCatching {
             if (file.exists()) JSONObject(file.readText()) else JSONObject()

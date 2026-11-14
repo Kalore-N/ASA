@@ -32,6 +32,12 @@ class MainActivity : ComponentActivity() {
         VpnPermission.result(result.resultCode == RESULT_OK)
     }
 
+    private val micPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        MicPermission.result(granted)
+    }
+
     override fun onResume() {
         super.onResume()
         AppVisibility.foreground = true
@@ -52,6 +58,7 @@ class MainActivity : ComponentActivity() {
         }
         val activity = this
         VpnPermission.attach { intent -> vpnPermission.launch(intent) }
+        MicPermission.attach { permission -> micPermission.launch(permission) }
         setContent {
             var config by remember { mutableStateOf(ConfigStore.load(activity)) }
             var showSettings by remember { mutableStateOf(false) }

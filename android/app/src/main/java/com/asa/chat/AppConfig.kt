@@ -15,6 +15,9 @@ data class AppConfig(
     val mdns: Boolean = true,
     val relays: List<String> = emptyList(),
     val port: Int = 7777,
+    val voiceEnabled: Boolean = true,
+    val voicePushToTalk: Boolean = false,
+    val voiceRecordDir: String = "",
 )
 
 /**
@@ -28,7 +31,71 @@ object ConfigStore {
     fun defaultDownloadDir(context: Context): String =
         File(context.filesDir, "asa/runtime/downloads").absolutePath
 
+    fun defaultJson(): JSONObject = JSONObject().apply {
+        put("version", 2)
+        put("download_dir", JSONObject.NULL)
+        put("max_file_mb", 100)
+        put("auto_accept", false)
+        put("ui", JSONObject().apply {
+            put("theme", "dark")
+            put("font_size", 15)
+            put("compact", false)
+            put("history_lines", 200)
+            put("vim_mode", true)
+            put("scroll_step", 3)
+        })
+        put("network", JSONObject().apply {
+            put("port", 7777)
+            put("mdns", true)
+            put("relays", JSONArray())
+        })
+        put("sync", JSONObject().apply {
+            put("enabled", true)
+            put("count", 50)
+        })
+        put("easytier", JSONObject().apply {
+            put("nodes", JSONArray())
+            put("auto_enable", true)
+        })
+        put("voice", JSONObject().apply {
+            put("enabled", true)
+            put("codec", "pcm")
+            put("sample_rate", 16000)
+            put("channels", 1)
+            put("frame_ms", 20)
+            put("push_to_talk", false)
+            put("record_dir", JSONObject.NULL)
+            put("input_device", JSONObject.NULL)
+            put("output_device", JSONObject.NULL)
+        })
+    }
+
+    private fun mergeMissing(target: JSONObject, defaults: JSONObject) {
+        for (key in defaults.keys()) {
+            val fallback = defaults.opt(key)
+            val current = target.opt(key)
+            if (current == null || current == JSONObject.NULL) {
+                target.put(key, fallback)
+            } else if (current is JSONObject && fallback is JSONObject) {
+                mergeMissing(current, fallback)
+            }
+        }
+    }
+
+    /** 补齐缺失字段并写回；保留未知字段。 */
+    fun ensureFull(context: Context) {
+        val file = path(context)
+        val existing = runCatching {
+            if (file.exists()) JSONObject(file.readText()) else JSONObject()
+        }.getOrElse { return }
+        mergeMissing(existing, defaultJson())
+        existing.put("version", 2)
+        file.parentFile?.mkdirs()
+        file.writeText(existing.toString(2))
+    }
+
     fun load(context: Context): AppConfig {
+        ensureFull(context)
         val file = path(context)
         if (!file.exists()) return AppConfig()
         return runCatching {
@@ -53,6 +120,11 @@ object ConfigStore {
                 mdns = net.optBoolean("mdns", true),
                 relays = relays,
                 port = net.optInt("port", 7777),
+                voiceEnabled = json.optJSONObject("voice")?.optBoolean("enabled", true) ?: true,
+                voicePushToTalk = json.optJSONObject("voice")?.optBoolean("push_to_talk", false) ?: false,
+                voiceRecordDir = json.optJSONObject("voice")?.optString("record_dir")
+                    ?.takeUnless { it == "null" }
+                    .orEmpty(),
             )
         }.getOrElse { AppConfig() }
     }
@@ -64,7 +136,8 @@ object ConfigStore {
         val json = runCatching {
             if (file.exists()) JSONObject(file.readText()) else JSONObject()
         }.getOrDefault(JSONObject())
-        json.put("version", 1)
+        mergeMissing(json, defaultJson())
+        json.put("version", 2)
         json.put(
             "download_dir",
             if (config.downloadDir.isBlank()) JSONObject.NULL else config.downloadDir,
@@ -81,6 +154,14 @@ object ConfigStore {
             put("mdns", config.mdns)
             put("relays", JSONArray(config.relays))
         })
+        val voice = json.optJSONObject("voice") ?: JSONObject()
+        voice.put("enabled", config.voiceEnabled)
+        voice.put("push_to_talk", config.voicePushToTalk)
+        voice.put(
+            "record_dir",
+            if (config.voiceRecordDir.isBlank()) JSONObject.NULL else config.voiceRecordDir,
+        )
+        json.put("voice", voice)
         file.writeText(json.toString(2))
     }
 }

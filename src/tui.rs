@@ -3,6 +3,7 @@
 use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::process::Child;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -46,6 +47,10 @@ const HELP: &str = "\
 /switch <名称|ID>     切换到指定频道
 /et [status|on|off|add <地址>|list|remove <编号>]
                       EasyTier 节点与当前频道内网穿透
+/call <昵称> | accept|reject|hangup|mute|ptt
+                      1:1 语音通话
+/voice <昵称> | stop | play <路径>
+                      录制/发送/播放语音消息
 /reply [编号]         回复指定消息；/reply 列出可回复的编号
 /copy                 把最近的邀请码或保存路径复制到系统剪贴板（OSC 52）
 Ctrl+Y                把最近内容放入输入行（剪贴板不可用时的兜底）
@@ -60,7 +65,7 @@ const HINTS: &str =
     "Enter 发送 · Tab 补全 · Ctrl+R 回复 · PgUp/PgDn 翻页 · /help 命令 · Ctrl+C 退出";
 
 /// 可补全的聊天指令。
-const COMMANDS: [&str; 18] = [
+const COMMANDS: [&str; 20] = [
     "/help",
     "/name",
     "/rename",
@@ -75,6 +80,8 @@ const COMMANDS: [&str; 18] = [
     "/channels",
     "/switch",
     "/et",
+    "/call",
+    "/voice",
     "/copy",
     "/clear",
     "/reply",
@@ -151,6 +158,7 @@ pub struct UiConfig {
     pub dirs: crate::paths::RuntimeDirs,
     pub vim_mode: bool,
     pub scroll_step: u16,
+    pub voice: crate::config::VoicePrefs,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -203,6 +211,28 @@ pub struct App {
     input_mode: InputMode,
     vim_mode: bool,
     scroll_step: u16,
+    voice: crate::config::VoicePrefs,
+    active_call: Option<ActiveCall>,
+    incoming_call: Option<IncomingCall>,
+    voice_message: Option<VoiceMessage>,
+    ptt_active: bool,
+}
+
+struct ActiveCall {
+    nick: String,
+    audio: Option<crate::audio::VoiceAudio>,
+    muted: bool,
+}
+
+struct IncomingCall {
+    nick: String,
+    call_id: String,
+}
+
+struct VoiceMessage {
+    child: Child,
+    path: PathBuf,
+    target: String,
 }
 
 impl App {
@@ -250,6 +280,11 @@ impl App {
             },
             vim_mode: cfg.vim_mode,
             scroll_step: cfg.scroll_step.max(1),
+            voice: cfg.voice,
+            active_call: None,
+            incoming_call: None,
+            voice_message: None,
+            ptt_active: false,
         };
         app.push_system("欢迎使用 ASA。直接输入文字回车发送；/help 查看命令；/invite 获取邀请码。");
         app
@@ -380,6 +415,65 @@ impl App {
             }
             NodeEvent::RoomName(name) => {
                 self.room_name = Some(name);
+            }
+            NodeEvent::CallRinging { nick, .. } => {
+                self.set_status(format!("正在呼叫 {nick}…"), false);
+            }
+            NodeEvent::IncomingCall {
+                peer,
+                nick,
+                call_id,
+            } => {
+                let _ = peer;
+                self.incoming_call = Some(IncomingCall {
+                    nick: nick.clone(),
+                    call_id: call_id.clone(),
+                });
+                self.set_status(
+                    format!("{nick} 来电：/call accept 接听，/call reject 拒绝"),
+                    false,
+                );
+            }
+            NodeEvent::CallAccepted {
+                peer,
+                nick,
+                call_id,
+            } => {
+                self.incoming_call = None;
+                let audio = if self.voice.enabled {
+                    match crate::audio::check_tools().and_then(|_| crate::audio::start(&self.voice))
+                    {
+                        Ok(audio) => Some(audio),
+                        Err(err) => {
+                            self.set_status(format!("音频启动失败: {err}"), true);
+                            let _ = self.cmd.send(Cmd::HangupCall);
+                            None
+                        }
+                    }
+                } else {
+                    self.set_status("语音功能未启用", true);
+                    let _ = self.cmd.send(Cmd::HangupCall);
+                    None
+                };
+                let _ = (peer, call_id);
+                self.active_call = Some(ActiveCall {
+                    nick: nick.clone(),
+                    audio,
+                    muted: false,
+                });
+                self.set_status(format!("与 {nick} 的通话已接通"), false);
+            }
+            NodeEvent::CallEnded { nick, reason, .. } => {
+                self.active_call = None;
+                self.incoming_call = None;
+                self.set_status(format!("与 {nick} 的通话结束: {reason}"), false);
+            }
+            NodeEvent::AudioFrame { data } => {
+                if let Some(call) = self.active_call.as_ref() {
+                    if let Some(audio) = call.audio.as_ref() {
+                        audio.player.play(data);
+                    }
+                }
             }
             NodeEvent::Info(text) => {
                 let error = text.contains("失败") || text.contains("错误") || text.contains("无法");
@@ -549,6 +643,68 @@ impl App {
             // Ctrl+C/L/U/R/Y 交给主键盘处理。
             return !matches!(key.code, KeyCode::Char('c' | 'l' | 'u' | 'r' | 'y'));
         }
+        if self.incoming_call.is_some() {
+            match key.code {
+                KeyCode::Char('y') => {
+                    if let Some(incoming) = self.incoming_call.take() {
+                        let _ = self.cmd.send(Cmd::AcceptCall {
+                            call_id: incoming.call_id,
+                        });
+                        self.set_status(format!("接听 {}…", incoming.nick), false);
+                    }
+                    return true;
+                }
+                KeyCode::Char('n') => {
+                    if let Some(incoming) = self.incoming_call.take() {
+                        let _ = self.cmd.send(Cmd::RejectCall {
+                            call_id: incoming.call_id,
+                        });
+                        self.set_status("已拒绝来电", false);
+                    }
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        if self.active_call.is_some() {
+            match key.code {
+                KeyCode::Char('m') => {
+                    let muted = if let Some(call) = self.active_call.as_mut() {
+                        call.muted = !call.muted;
+                        call.muted
+                    } else {
+                        false
+                    };
+                    self.set_status(
+                        if muted {
+                            "通话已静音"
+                        } else {
+                            "通话已取消静音"
+                        },
+                        false,
+                    );
+                    return true;
+                }
+                KeyCode::Char('h') => {
+                    let _ = self.cmd.send(Cmd::HangupCall);
+                    self.set_status("正在挂断…", false);
+                    return true;
+                }
+                KeyCode::Char('p') if self.voice.push_to_talk => {
+                    self.ptt_active = !self.ptt_active;
+                    self.set_status(
+                        if self.ptt_active {
+                            "按住说话：开"
+                        } else {
+                            "按住说话：关"
+                        },
+                        false,
+                    );
+                    return true;
+                }
+                _ => {}
+            }
+        }
         match key.code {
             KeyCode::Char('i') | KeyCode::Char('a') | KeyCode::Enter => {
                 self.input_mode = InputMode::Insert;
@@ -592,6 +748,20 @@ impl App {
     fn scroll_bottom(&mut self) {
         self.scroll = 0;
         self.follow = true;
+    }
+
+    fn pump_voice(&mut self) {
+        let push_to_talk = self.voice.push_to_talk;
+        let ptt = self.ptt_active;
+        if let Some(call) = self.active_call.as_mut() {
+            if let Some(audio) = call.audio.as_ref() {
+                while let Some(frame) = audio.capture.try_recv() {
+                    if !call.muted && (!push_to_talk || ptt) {
+                        let _ = self.cmd.send(Cmd::AudioFrame { data: frame });
+                    }
+                }
+            }
+        }
     }
 
     fn on_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
@@ -687,6 +857,185 @@ impl App {
             KeyCode::Esc => self.file_select = None,
             KeyCode::Char('c') if ctrl => self.should_quit = true,
             _ => {}
+        }
+    }
+
+    fn handle_call(&mut self, rest: &str) {
+        let arg = rest.trim();
+        if arg.is_empty() {
+            self.push_system(
+                "通话：/call <昵称> 发起；来电时 /call accept 或 /call reject；\
+                 通话中 /call mute、/call hangup，按住说话模式用 /call ptt 切换。",
+            );
+            return;
+        }
+        match arg {
+            "accept" => {
+                if let Some(incoming) = self.incoming_call.take() {
+                    let _ = self.cmd.send(Cmd::AcceptCall {
+                        call_id: incoming.call_id,
+                    });
+                    self.set_status("接听中…", false);
+                } else {
+                    self.set_status("没有待接听的来电", true);
+                }
+            }
+            "reject" => {
+                if let Some(incoming) = self.incoming_call.take() {
+                    let _ = self.cmd.send(Cmd::RejectCall {
+                        call_id: incoming.call_id,
+                    });
+                    self.set_status("已拒绝来电", false);
+                } else {
+                    self.set_status("没有待接听的来电", true);
+                }
+            }
+            "hangup" => {
+                let _ = self.cmd.send(Cmd::HangupCall);
+                self.set_status("正在挂断…", false);
+            }
+            "mute" => {
+                let muted = if let Some(call) = self.active_call.as_mut() {
+                    call.muted = !call.muted;
+                    Some(call.muted)
+                } else {
+                    None
+                };
+                match muted {
+                    Some(muted) => self.set_status(
+                        if muted {
+                            "通话已静音"
+                        } else {
+                            "通话已取消静音"
+                        },
+                        false,
+                    ),
+                    None => self.set_status("当前没有通话", true),
+                }
+            }
+            "ptt" => {
+                if self.active_call.is_none() {
+                    self.set_status("当前没有通话", true);
+                } else if !self.voice.push_to_talk {
+                    self.set_status("配置 voice.push_to_talk = true 后使用按住说话", true);
+                } else {
+                    self.ptt_active = !self.ptt_active;
+                    self.set_status(
+                        if self.ptt_active {
+                            "按住说话：开"
+                        } else {
+                            "按住说话：关"
+                        },
+                        false,
+                    );
+                }
+            }
+            target => {
+                if self.active_call.is_some() || self.incoming_call.is_some() {
+                    self.set_status("已有通话或来电", true);
+                    return;
+                }
+                let needle = target.trim_start_matches('@').to_lowercase();
+                let found = self.members.iter().find(|member| {
+                    !member.me
+                        && (member.nick.to_lowercase() == needle
+                            || member.pubkey.starts_with(&needle))
+                });
+                match found {
+                    Some(member) => {
+                        let _ = self.cmd.send(Cmd::Call {
+                            target: member.pubkey.clone(),
+                        });
+                        self.set_status(format!("正在呼叫 {}…", member.nick), false);
+                    }
+                    None => self.set_status(format!("找不到在线成员: {target}"), true),
+                }
+            }
+        }
+    }
+
+    fn handle_voice(&mut self, rest: &str) {
+        let mut parts = rest.splitn(2, char::is_whitespace);
+        let action = parts.next().unwrap_or("").trim();
+        let arg = parts.next().unwrap_or("").trim();
+        match action {
+            "play" => {
+                if arg.is_empty() {
+                    self.set_status("用法: /voice play <WAV 路径>", true);
+                    return;
+                }
+                let path = crate::util::expand_tilde(arg.trim_matches('"').trim_matches('\''));
+                match crate::audio::play_file(&path) {
+                    Ok(_) => self.set_status(format!("正在播放 {}", path.display()), false),
+                    Err(err) => self.set_status(format!("播放失败: {err}"), true),
+                }
+            }
+            "stop" => {
+                let Some(mut message) = self.voice_message.take() else {
+                    self.set_status("当前没有录音", true);
+                    return;
+                };
+                crate::audio::stop_recording(&mut message.child);
+                let ok = message
+                    .path
+                    .metadata()
+                    .map(|meta| meta.len() > 44)
+                    .unwrap_or(false);
+                if !ok {
+                    self.set_status("录音为空或失败", true);
+                    return;
+                }
+                let _ = self.cmd.send(Cmd::SendFile {
+                    target: message.target,
+                    path: message.path.clone(),
+                });
+                self.set_status(format!("语音消息已发送: {}", message.path.display()), false);
+            }
+            "" => {
+                self.push_system(
+                    "语音消息：/voice <昵称> 开始录音，/voice stop 停止并发送；\
+                     /voice play <路径> 播放。通话录音不保存，语音消息由你手动选择。",
+                );
+            }
+            target => {
+                if self.active_call.is_some() {
+                    self.set_status("通话中不能录制语音消息，请先挂断", true);
+                    return;
+                }
+                if self.voice_message.is_some() {
+                    self.set_status("已有录音进行中，先 /voice stop", true);
+                    return;
+                }
+                let needle = target.trim_start_matches('@').to_lowercase();
+                let Some(member) = self.members.iter().find(|member| {
+                    !member.me
+                        && (member.nick.to_lowercase() == needle
+                            || member.pubkey.starts_with(&needle))
+                }) else {
+                    self.set_status(format!("找不到在线成员: {target}"), true);
+                    return;
+                };
+                if let Err(err) = crate::audio::check_tools() {
+                    self.set_status(format!("语音工具不可用: {err}"), true);
+                    return;
+                }
+                let dir = crate::audio::voice_dir(&self.dirs, &self.voice);
+                let path = dir.join(format!("voice-{}.wav", crate::util::now_ms()));
+                match crate::audio::start_recording(&self.voice, &path) {
+                    Ok(child) => {
+                        self.voice_message = Some(VoiceMessage {
+                            child,
+                            path: path.clone(),
+                            target: member.pubkey.clone(),
+                        });
+                        self.set_status(
+                            format!("录音中 → {}；输入 /voice stop 结束", member.nick),
+                            false,
+                        );
+                    }
+                    Err(err) => self.set_status(format!("开始录音失败: {err}"), true),
+                }
+            }
         }
     }
 
@@ -1323,6 +1672,8 @@ impl App {
             "sync" => {
                 let _ = self.cmd.send(Cmd::Sync);
             }
+            "call" => self.handle_call(rest.trim()),
+            "voice" => self.handle_voice(rest.trim()),
             "channels" => {
                 self.action = Some(TuiAction::Lobby);
             }
@@ -2012,6 +2363,22 @@ impl App {
                 Style::default().fg(Color::Cyan),
             ));
         }
+        if let Some(incoming) = &self.incoming_call {
+            spans.push(Span::styled(
+                format!("  来电: {}", incoming.nick),
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+        if let Some(call) = &self.active_call {
+            spans.push(Span::styled(
+                format!(
+                    "  通话中: {}{}",
+                    call.nick,
+                    if call.muted { " (静音)" } else { "" }
+                ),
+                Style::default().fg(Color::Green),
+            ));
+        }
         if self.scroll > 0 {
             let back = if self.vim_mode {
                 "G 回到底部"
@@ -2067,6 +2434,7 @@ pub fn run(handle: NodeHandle, cfg: UiConfig) -> Result<TuiAction> {
         while let Ok(event) = events.try_recv() {
             app.on_event(event);
         }
+        app.pump_voice();
         if event::poll(Duration::from_millis(60))? {
             match event::read()? {
                 Event::Key(key) => {
@@ -2426,6 +2794,11 @@ mod tests {
             input_mode: InputMode::Insert,
             vim_mode: false,
             scroll_step: 3,
+            voice: crate::config::VoicePrefs::default(),
+            active_call: None,
+            incoming_call: None,
+            voice_message: None,
+            ptt_active: false,
             listen: "127.0.0.1:7777".parse().unwrap(),
             invite: String::new(),
             max_file: 0,
@@ -2947,8 +3320,14 @@ impl LobbyApp {
                                 GroupProfile::load(&self.dirs, &room.id).unwrap_or_default();
                             if profile.nick.is_none() {
                                 profile.nick = Some(self.nick.clone());
-                                let _ = profile.save(&self.dirs, &room.id);
                             }
+                            if profile.easytier_enabled.is_none() {
+                                profile.easytier_enabled = Some(
+                                    self.config.easytier.auto_enable
+                                        && !self.config.easytier.nodes.is_empty(),
+                                );
+                            }
+                            let _ = profile.save(&self.dirs, &room.id);
                             let _ = rooms::set_active(&self.dirs, &room.id);
                             self.pending_room = Some(room);
                             self.mode = LobbyMode::CreatePassword;

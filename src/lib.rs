@@ -3,6 +3,7 @@
 //! 所有节点对等：任何人都能接受新成员，消息在成员间泛洪传播，
 //! 「服主」只是一个由在场时间决定的逻辑角色，用于成员表同步与新成员入口。
 
+pub mod audio;
 pub mod config;
 pub mod crypto;
 pub mod discovery;

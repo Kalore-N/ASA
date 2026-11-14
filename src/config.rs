@@ -34,6 +34,8 @@ pub struct Config {
     pub sync: SyncPrefs,
     #[serde(default)]
     pub easytier: EasyTierPrefs,
+    #[serde(default)]
+    pub voice: VoicePrefs,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -41,12 +43,80 @@ pub struct EasyTierPrefs {
     /// 用户导入的 EasyTier 公共节点地址。
     #[serde(default)]
     pub nodes: Vec<String>,
+    /// 新频道默认开启 EasyTier；没有节点时仍不会启动。
+    #[serde(default = "default_auto_enable")]
+    pub auto_enable: bool,
 }
 
 impl Default for EasyTierPrefs {
     fn default() -> Self {
-        Self { nodes: Vec::new() }
+        Self {
+            nodes: Vec::new(),
+            auto_enable: true,
+        }
     }
+}
+
+/// 语音通话与语音消息配置。
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VoicePrefs {
+    #[serde(default = "default_voice_enabled")]
+    pub enabled: bool,
+    /// 目前固定 `pcm`；后续可扩展 opus。
+    #[serde(default = "default_voice_codec")]
+    pub codec: String,
+    #[serde(default = "default_voice_sample_rate")]
+    pub sample_rate: u32,
+    #[serde(default = "default_voice_channels")]
+    pub channels: u16,
+    #[serde(default = "default_voice_frame_ms")]
+    pub frame_ms: u16,
+    /// TUI 是否使用按住说话；false 为全双工。
+    #[serde(default)]
+    pub push_to_talk: bool,
+    /// 语音消息/录音目录；为空使用 `downloads/voice`。
+    #[serde(default)]
+    pub record_dir: Option<String>,
+    /// Windows/Linux 音频输入设备名（ffmpeg/arecord 使用）。
+    #[serde(default)]
+    pub input_device: Option<String>,
+    #[serde(default)]
+    pub output_device: Option<String>,
+}
+
+impl Default for VoicePrefs {
+    fn default() -> Self {
+        Self {
+            enabled: default_voice_enabled(),
+            codec: default_voice_codec(),
+            sample_rate: default_voice_sample_rate(),
+            channels: default_voice_channels(),
+            frame_ms: default_voice_frame_ms(),
+            push_to_talk: false,
+            record_dir: None,
+            input_device: None,
+            output_device: None,
+        }
+    }
+}
+
+fn default_auto_enable() -> bool {
+    true
+}
+fn default_voice_enabled() -> bool {
+    true
+}
+fn default_voice_codec() -> String {
+    "pcm".to_string()
+}
+fn default_voice_sample_rate() -> u32 {
+    16_000
+}
+fn default_voice_channels() -> u16 {
+    1
+}
+fn default_voice_frame_ms() -> u16 {
+    20
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -120,6 +190,7 @@ impl Default for Config {
             network: NetworkPrefs::default(),
             sync: SyncPrefs::default(),
             easytier: EasyTierPrefs::default(),
+            voice: VoicePrefs::default(),
         }
     }
 }
@@ -160,7 +231,7 @@ impl Default for NetworkPrefs {
 }
 
 fn default_version() -> u8 {
-    1
+    2
 }
 fn default_max_file_mb() -> u64 {
     100
@@ -202,7 +273,21 @@ impl Config {
     /// 读取配置；不存在时生成默认配置并写盘（会迁移旧 settings.json 的端口）。
     pub fn ensure(dirs: &RuntimeDirs) -> Result<Self> {
         let path = config_path(dirs);
-        if let Some(config) = Self::load(&path)? {
+        if path.exists() {
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("读取配置失败: {}", path.display()))?;
+            let mut value: serde_json::Value =
+                serde_json::from_str(&text).context("配置格式错误")?;
+            let defaults = serde_json::to_value(Config::default())?;
+            merge_missing(&mut value, &defaults);
+            if let Some(object) = value.as_object_mut() {
+                object.insert("version".to_string(), serde_json::json!(2));
+            }
+            let config: Config =
+                serde_json::from_value(value.clone()).context("配置字段格式错误")?;
+            std::fs::write(&path, serde_json::to_string_pretty(&value)?)
+                .with_context(|| format!("写入配置失败: {}", path.display()))?;
+            restrict_permissions(&path);
             return Ok(config);
         }
         let mut config = Config::default();
@@ -338,6 +423,19 @@ fn restrict_permissions(path: &Path) {
 #[cfg(not(unix))]
 fn restrict_permissions(_path: &Path) {}
 
+fn merge_missing(target: &mut serde_json::Value, defaults: &serde_json::Value) {
+    if let (Some(target), Some(defaults)) = (target.as_object_mut(), defaults.as_object()) {
+        for (key, value) in defaults {
+            match target.get_mut(key) {
+                Some(existing) => merge_missing(existing, value),
+                None => {
+                    target.insert(key.clone(), value.clone());
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,6 +501,27 @@ mod tests {
         let config = Config::ensure(&dirs).unwrap();
         assert_eq!(config.network.port, Some(8123));
         assert!(config_path(&dirs).exists());
+    }
+
+    #[test]
+    fn ensure_fills_missing_fields_and_keeps_unknown() {
+        let dirs = dirs("ensure-missing");
+        let path = config_path(&dirs);
+        std::fs::write(
+            &path,
+            r#"{"version":1,"network":{"port":8123},"unknown_key":"keep"}"#,
+        )
+        .unwrap();
+        let config = Config::ensure(&dirs).unwrap();
+        assert_eq!(config.version, 2);
+        assert_eq!(config.network.port, Some(8123));
+        assert_eq!(config.voice.sample_rate, 16_000);
+        assert!(config.easytier.auto_enable);
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["unknown_key"], "keep");
+        assert_eq!(saved["version"], 2);
+        assert_eq!(saved["voice"]["codec"], "pcm");
     }
 
     #[test]

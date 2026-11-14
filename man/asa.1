@@ -1,6 +1,6 @@
 .\" 中文排版不适合两端对齐
 .ds AD l
-.TH ASA 1 "2026-11-14" "asa 1.6.0" "用户命令"
+.TH ASA 1 "2026-11-14" "asa 1.7.0" "用户命令"
 .nh
 .SH NAME
 asa \- 去中心化 TUI 群聊工具
@@ -194,6 +194,26 @@ TCP 监听端口，默认 7777。未显式指定时会复用
 .B sync.count
 配置的条数同步历史；0 表示全部（最多 5000 条）。
 .TP
+.BI "/call " "昵称"
+发起 1:1 语音通话；也支持
+.B /call accept
+、
+.B /call reject
+、
+.B /call hangup
+、
+.B /call mute
+、
+.B /call ptt
+。
+.TP
+.BI "/voice " "昵称"
+开始录制语音消息；
+.B /voice stop
+停止并发送；
+.B /voice play 路径
+播放音频。
+.TP
 .BI "/reply " "[编号]"
 回复指定编号的消息。省略编号时列出最近消息的编号。
 .PP
@@ -293,6 +313,26 @@ EasyTier 启动失败时会回退到局域网/中继，不阻塞聊天。
 Android 同一用户同时只能有一个 VpnService。ASA 使用 per-app VPN，
 只影响 ASA 自身；但会替换其他 VpnService。需要同时运行两个 VPN 时，
 可将 ASA 安装在工作资料中。
+.SH VOICE
+1:1 实时通话使用 PCM 16kHz 单声道、20ms/帧。通话信令走现有加密 TCP，
+音频优先走 UDP，2 秒内收不到 UDP 会自动回退到 TCP。通话不录音。
+.PP
+TUI 浏览模式下
+.B m
+静音、
+.B h
+挂断；配置
+.B voice.push_to_talk=true
+时
+.B p
+切换按住说话。
+.PP
+Linux TUI 需要 alsa-utils（arecord/aplay）和 ffmpeg（ffplay）；
+Windows TUI 需要 ffmpeg/ffplay，并在
+.B voice.input_device
+填写 dshow 设备名。Android 使用系统 AudioRecord/AudioTrack。
+.PP
+语音消息保存为 WAV，通过现有加密文件传输发送；只有手动录制的语音消息会保存。
 .SH "LAN CHANNEL DISCOVERY"
 宿主进入频道后通过 mDNS 广播频道目录。TUI 大厅按
 .B f
@@ -324,7 +364,7 @@ Android 在频道列表顶部显示局域网频道，点选后输入密码；聊
 旧版单群配置；首次启动会自动迁移到 rooms/。
 .TP
 .I ~/Documents/ASA/runtime/data/config.json
-全局配置：下载目录、单文件上限、自动接受、UI 偏好（含 history_lines/vim_mode/scroll_step）、mDNS、中继、历史同步与 EasyTier 节点。
+全局配置：下载目录、单文件上限、自动接受、UI 偏好（含 history_lines/vim_mode/scroll_step）、mDNS、中继、历史同步、EasyTier 节点与语音设置。
 .TP
 .I ~/Documents/ASA/runtime/data/groups/\fI群ID\fR.json
 群配置：群内昵称、EasyTier 开关、加入密码哈希/加密密码，以及下载目录/大小上限/自动接受/提及提醒的覆盖项。
@@ -413,6 +453,8 @@ asa \-\-connect 203.0.113.10:7777
 文件传输需要双方同时在线，并且不会检查接收方的剩余磁盘空间。
 .PP
 EasyTier 需要 TUN 权限；没有权限或节点不可达时会回退到局域网/中继。
+.PP
+语音 UDP 不通时会回退 TCP；通话不录音，语音消息需要手动开始/结束。
 Android 上 EasyTier 会占用系统唯一的 VpnService，可能替换其他 VPN。
 .PP
 同步会把本地 JSONL 历史发送给在线成员；关闭 sync.enabled 可禁用自动同步。

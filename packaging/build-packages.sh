@@ -71,7 +71,7 @@ Architecture: amd64
 Maintainer: Kalore-N <zhanghaoyu2421@outlook.com>
 Section: net
 Priority: optional
-Depends: libcap2-bin
+Depends: libcap2-bin, ffmpeg, alsa-utils
 Installed-Size: $SIZE
 Description: 去中心化 TUI 群聊
  ASA is a decentralized terminal chat client with end-to-end

@@ -99,6 +99,28 @@ pub enum Payload {
     SyncBatch {
         messages: Vec<SyncMessage>,
     },
+    /// 语音通话邀请。
+    CallInvite {
+        call_id: String,
+        port: u16,
+    },
+    CallAccept {
+        call_id: String,
+        port: u16,
+    },
+    CallReject {
+        call_id: String,
+        reason: String,
+    },
+    CallHangup {
+        call_id: String,
+    },
+    /// TCP 回退时的语音帧（PCM base64）。
+    VoiceFrame {
+        call_id: String,
+        seq: u64,
+        data: String,
+    },
     /// 在线心跳，携带昵称/地址/在场时间。
     Presence {
         nick: String,

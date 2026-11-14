@@ -44,6 +44,45 @@ pub fn open(key: &RoomKey, aad: &[u8], nonce: &[u8; 12], ciphertext: &[u8]) -> R
         .map_err(|_| anyhow!("解密失败：密钥不匹配或消息被篡改"))
 }
 
+/// 使用调用方提供的 nonce 加密（用于实时语音的计数器 nonce）。
+pub fn seal_nonce(
+    key: &RoomKey,
+    aad: &[u8],
+    nonce: &[u8; 12],
+    plaintext: &[u8],
+) -> Result<Vec<u8>> {
+    let cipher =
+        ChaCha20Poly1305::new_from_slice(key).map_err(|e| anyhow!("初始化加密器失败: {e}"))?;
+    cipher
+        .encrypt(
+            Nonce::from_slice(nonce),
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
+        .map_err(|_| anyhow!("加密失败"))
+}
+
+pub fn open_nonce(
+    key: &RoomKey,
+    aad: &[u8],
+    nonce: &[u8; 12],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>> {
+    let cipher =
+        ChaCha20Poly1305::new_from_slice(key).map_err(|e| anyhow!("初始化解密器失败: {e}"))?;
+    cipher
+        .decrypt(
+            Nonce::from_slice(nonce),
+            Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
+        .map_err(|_| anyhow!("解密失败：密钥不匹配或被篡改"))
+}
+
 pub fn random_nonce() -> [u8; 12] {
     use rand::RngCore;
     let mut nonce = [0u8; 12];

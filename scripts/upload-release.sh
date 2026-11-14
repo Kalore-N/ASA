@@ -8,7 +8,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TAG="${TAG:-v1.6.0}"
+TAG="${TAG:-v1.7.0}"
 REPO="${REPO:-Kalore-N/ASA}"
 TOKEN="${GITHUB_TOKEN:?请设置 GITHUB_TOKEN（只需 Contents: Read and write）}"
 API="https://api.github.com/repos/$REPO"

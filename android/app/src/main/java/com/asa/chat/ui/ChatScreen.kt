@@ -30,9 +30,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.AlertDialog
@@ -86,6 +90,7 @@ import com.asa.chat.R
 import com.asa.chat.ChatMessage
 import com.asa.chat.FileOffer
 import com.asa.chat.Member
+import com.asa.chat.CallStatus
 import com.asa.chat.Transfer
 import com.asa.chat.UiState
 import java.time.Instant
@@ -108,6 +113,8 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
     var showInvite by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showTransfers by remember { mutableStateOf(false) }
+    var showCallPicker by remember { mutableStateOf(false) }
+    var showVoicePicker by remember { mutableStateOf(false) }
     var showNick by remember { mutableStateOf(false) }
     var showRename by remember { mutableStateOf(false) }
     var showConnect by remember { mutableStateOf(false) }
@@ -183,6 +190,9 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showCallPicker = true }) {
+                        Icon(Icons.Filled.Call, contentDescription = "语音通话")
+                    }
                     IconButton(onClick = { showMembers = true }) {
                         Icon(Icons.Filled.People, contentDescription = "成员")
                     }
@@ -211,6 +221,22 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
                                     showTransfers = true
                                 },
                             )
+                            DropdownMenuItem(
+                                text = { Text("发送语音消息") },
+                                onClick = {
+                                    showMenu = false
+                                    showVoicePicker = true
+                                },
+                            )
+                            if (state.lastVoicePath != null) {
+                                DropdownMenuItem(
+                                    text = { Text("播放最近语音") },
+                                    onClick = {
+                                        showMenu = false
+                                        vm.playLastVoice()
+                                    },
+                                )
+                            }
                             DropdownMenuItem(
                                 text = { Text("打开下载目录") },
                                 onClick = {
@@ -274,20 +300,23 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
             )
         },
         bottomBar = {
-            Composer(
-                state = state,
-                input = input,
-                onInputChange = { input = it },
-                onSend = {
-                    if (input.text.isNotBlank()) {
-                        vm.send(input.text)
-                        input = TextFieldValue("")
-                    }
-                },
-                onCancelReply = vm::clearReply,
-                onAccept = vm::acceptOffer,
-                onReject = vm::rejectOffer,
-            )
+            Column {
+                CallBar(state = state, vm = vm)
+                Composer(
+                    state = state,
+                    input = input,
+                    onInputChange = { input = it },
+                    onSend = {
+                        if (input.text.isNotBlank()) {
+                            vm.send(input.text)
+                            input = TextFieldValue("")
+                        }
+                    },
+                    onCancelReply = vm::clearReply,
+                    onAccept = vm::acceptOffer,
+                    onReject = vm::rejectOffer,
+                )
+            }
         },
     ) { padding ->
         LazyColumn(
@@ -387,6 +416,85 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
             },
             confirmButton = {
                 TextButton(onClick = { showTransfers = false }) { Text("关闭") }
+            },
+        )
+    }
+
+    if (showCallPicker) {
+        AlertDialog(
+            onDismissRequest = { showCallPicker = false },
+            shape = DialogShape,
+            title = { Text("语音通话") },
+            text = {
+                val others = state.members.filter { !it.me }
+                if (others.isEmpty()) {
+                    Text("暂无其他在线成员", fontSize = 13.sp)
+                } else {
+                    LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
+                        items(others, key = { it.pubkey }) { member ->
+                            TextButton(
+                                onClick = {
+                                    showCallPicker = false
+                                    vm.startCall(member.pubkey)
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("${member.nick} · ${member.peerId.take(8)}")
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showCallPicker = false }) { Text("取消") }
+            },
+        )
+    }
+
+    if (showVoicePicker) {
+        AlertDialog(
+            onDismissRequest = { showVoicePicker = false },
+            shape = DialogShape,
+            title = { Text("发送语音消息") },
+            text = {
+                val others = state.members.filter { !it.me }
+                if (others.isEmpty()) {
+                    Text("暂无其他在线成员", fontSize = 13.sp)
+                } else {
+                    LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
+                        items(others, key = { it.pubkey }) { member ->
+                            TextButton(
+                                onClick = {
+                                    showVoicePicker = false
+                                    vm.startVoiceMessage(member.pubkey)
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("${member.nick} · ${member.peerId.take(8)}")
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showVoicePicker = false }) { Text("取消") }
+            },
+        )
+    }
+
+    if (state.call.status == CallStatus.Incoming) {
+        AlertDialog(
+            onDismissRequest = {},
+            shape = DialogShape,
+            title = { Text("${state.call.nick} 来电") },
+            text = { Text("是否接听语音通话？", fontSize = 13.sp) },
+            confirmButton = {
+                TextButton(onClick = { vm.acceptCall() }) { Text("接听") }
+            },
+            dismissButton = {
+                TextButton(onClick = { vm.rejectCall() }) {
+                    Text("拒绝", color = MaterialTheme.colorScheme.error)
+                }
             },
         )
     }
@@ -570,6 +678,67 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
                 TextButton(onClick = { showTargets = false }) { Text("取消") }
             },
         )
+    }
+}
+
+@Composable
+private fun CallBar(state: UiState, vm: AsaViewModel) {
+    if (state.voiceRecording) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.errorContainer)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("录音中…", color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 12.sp)
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = vm::stopVoiceMessage) { Text("停止并发送") }
+        }
+    }
+    when (state.call.status) {
+        CallStatus.Calling -> Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("正在呼叫 ${state.call.nick}…", fontSize = 12.sp)
+            Spacer(Modifier.weight(1f))
+            IconButton(onClick = vm::hangupCall) {
+                Icon(Icons.Filled.CallEnd, contentDescription = "挂断")
+            }
+        }
+        CallStatus.Active -> Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "通话中: ${state.call.nick}${if (state.call.muted) " (静音)" else ""}",
+                fontSize = 12.sp,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = vm::toggleCallMute) {
+                Icon(
+                    if (state.call.muted) Icons.Filled.VolumeOff else Icons.Filled.VolumeUp,
+                    contentDescription = "静音",
+                )
+            }
+            IconButton(onClick = vm::toggleSpeaker) {
+                Icon(
+                    if (state.call.speaker) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
+                    contentDescription = "免提",
+                )
+            }
+            IconButton(onClick = vm::hangupCall) {
+                Icon(Icons.Filled.CallEnd, contentDescription = "挂断")
+            }
+        }
+        else -> Unit
     }
 }
 

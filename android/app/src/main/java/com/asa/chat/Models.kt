@@ -61,6 +61,17 @@ data class SavedGroup(
 
 enum class Screen { Connect, Groups, Chat }
 
+enum class CallStatus { Idle, Calling, Incoming, Active }
+
+data class CallState(
+    val status: CallStatus = CallStatus.Idle,
+    val peer: String = "",
+    val nick: String = "",
+    val callId: String = "",
+    val muted: Boolean = false,
+    val speaker: Boolean = false,
+)
+
 data class UiState(
     val screen: Screen = Screen.Connect,
     val connecting: Boolean = false,
@@ -86,6 +97,10 @@ data class UiState(
     val easytierError: String? = null,
     val lanChannels: List<LanChannel> = emptyList(),
     val lanLoading: Boolean = false,
+    val call: CallState = CallState(),
+    val voiceRecording: Boolean = false,
+    val voiceTarget: String = "",
+    val lastVoicePath: String? = null,
 ) {
     val hostNick: String
         get() = members.firstOrNull { it.pubkey == host }?.nick ?: "—"

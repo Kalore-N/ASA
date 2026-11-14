@@ -1,12 +1,12 @@
 pkgname=asa
-pkgver=1.6.0
+pkgver=1.7.0
 pkgrel=1
 packager="Kalore-N <zhanghaoyu2421@outlook.com>"
 pkgdesc="去中心化 TUI 群聊"
 arch=('x86_64')
 url="https://github.com/Kalore-N/ASA"
 license=('MIT')
-depends=('libcap')
+depends=('libcap' 'ffmpeg' 'alsa-utils')
 options=('!strip')
 install=asa-easytier.install
 source=(

@@ -457,7 +457,8 @@ fn run_chat(
         let mut selected_nodes: Vec<String> = Vec::new();
         let mut extra_entries: Vec<String> = Vec::new();
 
-        if profile.easytier_enabled.unwrap_or(false) {
+        let auto_easytier = config.easytier.auto_enable && !config.easytier.nodes.is_empty();
+        if profile.easytier_enabled.unwrap_or(auto_easytier) {
             let mut nodes = room.et_nodes.clone();
             if nodes.is_empty() {
                 nodes = config.easytier.nodes.clone();
@@ -558,6 +559,7 @@ fn run_chat(
             dirs: dirs.clone(),
             vim_mode: config.ui.vim_mode,
             scroll_step: config.ui.scroll_step,
+            voice: config.voice.clone(),
         };
         let action = tui::run(handle, ui);
         runtime.shutdown_timeout(Duration::from_secs(2));

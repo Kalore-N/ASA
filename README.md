@@ -2,7 +2,7 @@
 
 这是我第一次尝试vibe coding的产物，随便写了点小东西玩玩
 
-当前版本：**1.6.0**
+当前版本：**1.7.0**
 
 ASA 是一个用 Rust 编写的**完全去中心化**终端频道工具：没有中心服务器，每个参与者都是对等节点。支持局域网自动发现、跨网手动连接、端到端加密、本地聊天记录（JSONL）以及文件传输。
 
@@ -191,6 +191,8 @@ Android 同一用户同时只能有一个 **VpnService**。ASA 使用 per-app VP
 | `/channels` | 打开频道选择框 |
 | `/switch <名称或 ID>` | 切换到指定频道 |
 | `/et [status\|on\|off\|add <地址>\|list\|remove <编号>]` | 管理 EasyTier 节点与当前频道内网穿透 |
+| `/call <昵称> \| accept \| reject \| hangup \| mute \| ptt` | 1:1 语音通话 |
+| `/voice <昵称> \| stop \| play <路径>` | 录制、发送、播放语音消息 |
 | `/reply [编号]` | 回复指定消息；不带编号时列出最近消息的编号 |
 | `/clear` | 清空当前屏幕 |
 | `/quit` | 退出 |
@@ -243,7 +245,18 @@ asa import <文件>               导入群文件
   },
   "network": { "port": null, "mdns": true, "relays": [] },
   "sync": { "enabled": true, "count": 50 },
-  "easytier": { "nodes": [] }
+  "easytier": { "nodes": [], "auto_enable": true },
+  "voice": {
+    "enabled": true,
+    "codec": "pcm",
+    "sample_rate": 16000,
+    "channels": 1,
+    "frame_ms": 20,
+    "push_to_talk": false,
+    "record_dir": null,
+    "input_device": null,
+    "output_device": null
+  }
 }
 ```
 
@@ -259,6 +272,12 @@ asa import <文件>               导入群文件
 - `sync.enabled`：加入频道后自动向在线成员拉取最近聊天记录，默认开启。
 - `sync.count`：每次请求的条数，默认 50；设为 0 表示全部（最多 5000 条）。同步会从**本地全部 JSONL 历史**中取记录，并写入本地日志、按原时间插入界面；可用 `/sync` 手动触发。
 - `easytier.nodes`：手动导入或一键导入的 EasyTier 节点地址列表，默认空；为空时频道仍可用局域网/中继。
+- `easytier.auto_enable`：有新节点时，新频道默认开启 EasyTier，默认 true。
+- `voice.enabled`：启用语音通话和语音消息。
+- `voice.codec` / `sample_rate` / `channels` / `frame_ms`：目前固定 PCM 16kHz 单声道，20ms/帧。
+- `voice.push_to_talk`：TUI 使用按住说话；false 为全双工。
+- `voice.record_dir`：语音消息保存目录；留空使用 `downloads/voice`。
+- `voice.input_device` / `output_device`：Linux ALSA 设备或 Windows ffmpeg dshow 设备名。
 
 群配置在 `runtime/data/groups/<频道 ID>.json`，`null` 表示继承全局：
 
@@ -334,6 +353,40 @@ asa import my-group.json
 - 中继默认无状态，群列表和群密钥始终保存在本地；任意成员重新上线并注册后，其他人可通过任意可用中继重新发现。
 - 新设备导入 `my-group.json`，或使用长期邀请码，即可加入。
 - 如果中继也下线，群仍保存在本地/群文件中；重新部署中继后即可恢复入口。
+
+## 语音通话与语音消息
+
+### 1:1 实时通话
+
+- 通话邀请/接听/拒绝/挂断走现有加密 TCP
+- 音频使用 PCM 16kHz 单声道、20ms/帧
+- 优先走 UDP；2 秒内收不到 UDP 自动回退到现有加密 TCP
+- 通话不录音，只有你手动录制的语音消息会保存
+
+TUI：
+
+- `/call <昵称>` 发起，来电时 `/call accept` / `/call reject`
+- 通话中 `/call mute`、`/call hangup`、`/call ptt`
+- 浏览模式下 `m` 静音、`h` 挂断；`voice.push_to_talk=true` 时 `p` 切换发送
+
+Android：
+
+- 聊天页顶部电话按钮选择成员发起通话
+- 来电弹窗接听/拒绝；通话条支持静音、免提、挂断
+- 麦克风权限和前台服务 `microphone`
+
+### 语音消息
+
+- TUI `/voice <昵称>` 开始录音，`/voice stop` 停止并发送；`/voice play <路径>` 播放
+- Android 菜单「发送语音消息」选择成员录音，再点「停止并发送」；收到后「播放最近语音」
+- 语音消息保存为 WAV，走现有加密文件传输；对方接受后保存到下载目录
+- 通话不自动录音，避免误录双方声音
+
+### 依赖
+
+- Linux TUI：`arecord` / `aplay`（alsa-utils）、`ffplay`（ffmpeg）
+- Windows TUI：`ffmpeg` / `ffplay`，并在 `voice.input_device` 填写 dshow 设备名
+- Android：使用系统 AudioRecord/AudioTrack/MediaPlayer，无需额外安装
 
 ## 局域网频道发现
 
@@ -433,25 +486,25 @@ GitHub Releases 提供各平台的可运行产物；源码仓库不包含构建�
 
 | 平台 | 文件 | 说明 |
 | --- | --- | --- |
-| Linux x86-64 | `asa-1.6.0-linux-x86_64.tar.gz` | 含 `asa`、`easytier-core`、`easytier-cli` |
-| Windows x86-64 | `asa-1.6.0-windows-x86_64.zip` | 含 `asa.exe`、EasyTier、`wintun.dll` |
-| Android arm64 | `asa-1.6.0-android-arm64.apk` | 真机推荐；含 arm64 EasyTier 原生库 |
-| Android x86_64 | `asa-1.6.0-android-x86_64.apk` | 模拟器 / x86_64 平板 |
-| Arch Linux x86-64 | `asa-1.6.0-1-x86_64.pkg.tar.zst` | 含二进制、EasyTier、man、桌面入口与图标 |
-| Debian / Ubuntu amd64 | `asa_1.6.0_amd64.deb` | 含二进制、EasyTier、man、桌面入口与图标 |
-| Fedora / RHEL x86-64 | `asa-1.6.0-1.x86_64.rpm` | 含二进制、EasyTier、man、桌面入口与图标 |
+| Linux x86-64 | `asa-1.7.0-linux-x86_64.tar.gz` | 含 `asa`、`easytier-core`、`easytier-cli` |
+| Windows x86-64 | `asa-1.7.0-windows-x86_64.zip` | 含 `asa.exe`、EasyTier、`wintun.dll` |
+| Android arm64 | `asa-1.7.0-android-arm64.apk` | 真机推荐；含 arm64 EasyTier 原生库 |
+| Android x86_64 | `asa-1.7.0-android-x86_64.apk` | 模拟器 / x86_64 平板 |
+| Arch Linux x86-64 | `asa-1.7.0-1-x86_64.pkg.tar.zst` | 含二进制、EasyTier、man、桌面入口与图标 |
+| Debian / Ubuntu amd64 | `asa_1.7.0_amd64.deb` | 含二进制、EasyTier、man、桌面入口与图标 |
+| Fedora / RHEL x86-64 | `asa-1.7.0-1.x86_64.rpm` | 含二进制、EasyTier、man、桌面入口与图标 |
 
 ### Linux 发行版包
 
 ```bash
 # Arch
-sudo pacman -U asa-1.6.0-1-x86_64.pkg.tar.zst
+sudo pacman -U asa-1.7.0-1-x86_64.pkg.tar.zst
 
 # Debian / Ubuntu
-sudo apt install ./asa_1.6.0_amd64.deb
+sudo apt install ./asa_1.7.0_amd64.deb
 
 # Fedora / RHEL
-sudo dnf install ./asa-1.6.0-1.x86_64.rpm
+sudo dnf install ./asa-1.7.0-1.x86_64.rpm
 ```
 
 安装后直接运行 `asa`，或从应用菜单打开 ASA。安装包是静态二进制，不依赖系统 Rust 工具链。
@@ -479,6 +532,8 @@ Android 版说明：
 - 进入频道时会从本地 JSONL 加载最近历史；`/sync` 可以继续向在线成员拉取
 - 频道列表顶部会显示局域网内发现的频道，设置密码的频道需要输入密码
 - 查看文件传输进度，或直接打开系统文件管理器中的 ASA 下载目录
+- 聊天页电话按钮发起 1:1 语音通话；菜单可发送/播放语音消息
+- 首次使用语音会请求麦克风权限
 
 - 页面采用小圆角：消息气泡 8dp，按钮、输入框和卡片 6dp。
 - 设置页包含下载保存位置与复制、单文件上限、主题、字号、紧凑布局、mDNS、中继、自动接受；与 `config.json` 字段对应。

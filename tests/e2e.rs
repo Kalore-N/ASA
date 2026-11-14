@@ -879,3 +879,120 @@ async fn sync_reads_local_history_after_restart() {
     node_a2.cmd.send(Cmd::Quit).ok();
     node_b.cmd.send(Cmd::Quit).ok();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn voice_call_signaling_and_audio_frame() {
+    let root_a = unique_root("voice-a");
+    let root_b = unique_root("voice-b");
+    let identity_a = Identity::generate();
+    let identity_b = Identity::generate();
+    let room = RoomConfig::create(&identity_a);
+    let (node_a, _dirs_a) = start_node(
+        &root_a,
+        "alice",
+        identity_a.clone(),
+        &room,
+        room.created_at,
+        8 * 1024 * 1024,
+    )
+    .await;
+    let (node_b, _dirs_b) = start_node(
+        &root_b,
+        "bob",
+        identity_b.clone(),
+        &room,
+        asa::util::now_ms(),
+        8 * 1024 * 1024,
+    )
+    .await;
+    connect(&node_b, &node_a);
+    assert!(
+        wait_event(&node_b.events, Duration::from_secs(10), |event| {
+            matches!(event, NodeEvent::Members { members, .. } if members.len() >= 2)
+        })
+        .is_some(),
+        "双方应连接"
+    );
+
+    node_a
+        .cmd
+        .send(Cmd::Call {
+            target: node_b.pubkey.clone(),
+        })
+        .unwrap();
+    let incoming = wait_event(&node_b.events, Duration::from_secs(5), |event| {
+        matches!(event, NodeEvent::IncomingCall { .. })
+    })
+    .expect("B 应收到来电");
+    let call_id = match incoming {
+        NodeEvent::IncomingCall { call_id, .. } => call_id,
+        _ => unreachable!(),
+    };
+    assert!(
+        wait_event(&node_a.events, Duration::from_secs(5), |event| {
+            matches!(event, NodeEvent::CallRinging { .. })
+        })
+        .is_some(),
+        "A 应进入响铃"
+    );
+
+    node_b
+        .cmd
+        .send(Cmd::AcceptCall {
+            call_id: call_id.clone(),
+        })
+        .unwrap();
+    assert!(
+        wait_event(&node_a.events, Duration::from_secs(5), |event| {
+            matches!(event, NodeEvent::CallAccepted { .. })
+        })
+        .is_some(),
+        "A 应收到接听"
+    );
+    assert!(
+        wait_event(&node_b.events, Duration::from_secs(5), |event| {
+            matches!(event, NodeEvent::CallAccepted { .. })
+        })
+        .is_some(),
+        "B 应进入通话"
+    );
+
+    let frame = vec![7u8; 640];
+    node_a
+        .cmd
+        .send(Cmd::AudioFrame {
+            data: frame.clone(),
+        })
+        .unwrap();
+    let received = wait_event(
+        &node_b.events,
+        Duration::from_secs(6),
+        |event| matches!(event, NodeEvent::AudioFrame { data } if data == &frame),
+    );
+    assert!(received.is_some(), "B 应收到 A 的 PCM 帧");
+
+    node_b
+        .cmd
+        .send(Cmd::AudioFrame {
+            data: frame.clone(),
+        })
+        .unwrap();
+    assert!(
+        wait_event(&node_a.events, Duration::from_secs(6), |event| {
+            matches!(event, NodeEvent::AudioFrame { data } if data == &frame)
+        })
+        .is_some(),
+        "A 应收到 B 的 PCM 帧"
+    );
+
+    node_a.cmd.send(Cmd::HangupCall).unwrap();
+    assert!(
+        wait_event(&node_b.events, Duration::from_secs(5), |event| {
+            matches!(event, NodeEvent::CallEnded { .. })
+        })
+        .is_some(),
+        "B 应收到挂断"
+    );
+    node_a.cmd.send(Cmd::Quit).ok();
+    node_b.cmd.send(Cmd::Quit).ok();
+}

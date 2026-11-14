@@ -156,8 +156,9 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
     };
 
     let mut profile = GroupProfile::load(&dirs, &room.id).unwrap_or_default();
-    if profile.easytier_enabled.is_none() && !room.et_nodes.is_empty() {
-        profile.easytier_enabled = Some(true);
+    if profile.easytier_enabled.is_none() {
+        let auto = config.easytier.auto_enable && !config.easytier.nodes.is_empty();
+        profile.easytier_enabled = Some(!room.et_nodes.is_empty() || auto);
         let _ = profile.save(&dirs, &room.id);
     }
     let nick = cfg
@@ -457,6 +458,38 @@ fn event_json(event: NodeEvent) -> serde_json::Value {
             "name": name,
         }),
         NodeEvent::RoomName(name) => json!({ "type": "room_name", "name": name }),
+        NodeEvent::CallRinging {
+            peer,
+            nick,
+            call_id,
+        } => json!({
+            "type": "call_ringing", "peer": peer, "nick": nick, "call_id": call_id,
+        }),
+        NodeEvent::IncomingCall {
+            peer,
+            nick,
+            call_id,
+        } => json!({
+            "type": "incoming_call", "peer": peer, "nick": nick, "call_id": call_id,
+        }),
+        NodeEvent::CallAccepted {
+            peer,
+            nick,
+            call_id,
+        } => json!({
+            "type": "call_accepted", "peer": peer, "nick": nick, "call_id": call_id,
+        }),
+        NodeEvent::CallEnded {
+            peer,
+            nick,
+            call_id,
+            reason,
+        } => json!({
+            "type": "call_ended", "peer": peer, "nick": nick, "call_id": call_id, "reason": reason,
+        }),
+        NodeEvent::AudioFrame { data } => json!({
+            "type": "audio_frame", "data": crate::crypto::b64e(&data),
+        }),
         NodeEvent::Info(text) => json!({ "type": "info", "text": text }),
         NodeEvent::Shutdown => json!({ "type": "shutdown" }),
     }
@@ -505,6 +538,19 @@ enum AndroidCommand {
         reason: Option<String>,
     },
     Sync,
+    Call {
+        target: String,
+    },
+    AcceptCall {
+        call_id: String,
+    },
+    RejectCall {
+        call_id: String,
+    },
+    HangupCall,
+    AudioFrame {
+        data: String,
+    },
     Quit,
 }
 
@@ -532,6 +578,14 @@ fn send_command_inner(json_text: &str) -> String {
             Cmd::Reject(xfer)
         }
         AndroidCommand::Sync => Cmd::Sync,
+        AndroidCommand::Call { target } => Cmd::Call { target },
+        AndroidCommand::AcceptCall { call_id } => Cmd::AcceptCall { call_id },
+        AndroidCommand::RejectCall { call_id } => Cmd::RejectCall { call_id },
+        AndroidCommand::HangupCall => Cmd::HangupCall,
+        AndroidCommand::AudioFrame { data } => match crate::crypto::b64d(&data) {
+            Ok(frame) => Cmd::AudioFrame { data: frame },
+            Err(err) => return fail(err),
+        },
         AndroidCommand::Quit => Cmd::Quit,
     };
     let bridge = BRIDGE.lock().unwrap();
