@@ -13,7 +13,10 @@ REPO="${REPO:-Kalore-N/ASA}"
 TOKEN="${GITHUB_TOKEN:?请设置 GITHUB_TOKEN（只需 Contents: Read and write）}"
 API="https://api.github.com/repos/$REPO"
 UPLOAD="https://uploads.github.com/repos/$REPO"
-NOTES="$ROOT/dist/release-notes-${TAG#v}.md"
+NOTES="$ROOT/packaging/release-notes-${TAG#v}.md"
+if [ ! -f "$NOTES" ]; then
+  NOTES="$ROOT/dist/release-notes-${TAG#v}.md"
+fi
 [ -f "$NOTES" ] || { echo "找不到发布说明：$NOTES" >&2; exit 1; }
 
 umask 077
