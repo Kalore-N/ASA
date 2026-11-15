@@ -121,6 +121,19 @@ pub enum Payload {
         seq: u64,
         data: String,
     },
+    /// 加入频道常驻语音房。
+    VoiceRoomJoin,
+    /// 离开频道常驻语音房。
+    VoiceRoomLeave,
+    /// 语音房成员快照（新加入者用它补齐名单）。
+    VoiceRoomState {
+        members: Vec<VoiceRoomMember>,
+    },
+    /// 语音房音频帧（PCM base64，TCP 加密转发）。
+    VoiceRoomFrame {
+        seq: u64,
+        data: String,
+    },
     /// 在线心跳，携带昵称/地址/在场时间。
     Presence {
         nick: String,
@@ -158,6 +171,12 @@ pub enum Payload {
         ok: bool,
         msg: String,
     },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VoiceRoomMember {
+    pub pubkey: String,
+    pub nick: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

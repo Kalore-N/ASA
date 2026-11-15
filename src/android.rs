@@ -500,6 +500,24 @@ fn event_json(event: NodeEvent) -> serde_json::Value {
         NodeEvent::AudioFrame { data } => json!({
             "type": "audio_frame", "data": crate::crypto::b64e(&data),
         }),
+        NodeEvent::VoiceRoomState { joined, members } => json!({
+            "type": "voice_room_state",
+            "joined": joined,
+            "members": members.iter().map(|member| json!({
+                "pubkey": member.pubkey,
+                "nick": member.nick,
+            })).collect::<Vec<_>>(),
+        }),
+        NodeEvent::VoiceRoomAudio {
+            from,
+            from_nick,
+            data,
+        } => json!({
+            "type": "voice_room_audio",
+            "from": from,
+            "from_nick": from_nick,
+            "data": crate::crypto::b64e(&data),
+        }),
         NodeEvent::Info(text) => json!({ "type": "info", "text": text }),
         NodeEvent::Shutdown => json!({ "type": "shutdown" }),
     }
@@ -561,6 +579,11 @@ enum AndroidCommand {
     AudioFrame {
         data: String,
     },
+    VoiceRoomJoin,
+    VoiceRoomLeave,
+    VoiceRoomFrame {
+        data: String,
+    },
     Quit,
 }
 
@@ -594,6 +617,12 @@ fn send_command_inner(json_text: &str) -> String {
         AndroidCommand::HangupCall => Cmd::HangupCall,
         AndroidCommand::AudioFrame { data } => match crate::crypto::b64d(&data) {
             Ok(frame) => Cmd::AudioFrame { data: frame },
+            Err(err) => return fail(err),
+        },
+        AndroidCommand::VoiceRoomJoin => Cmd::VoiceRoomJoin,
+        AndroidCommand::VoiceRoomLeave => Cmd::VoiceRoomLeave,
+        AndroidCommand::VoiceRoomFrame { data } => match crate::crypto::b64d(&data) {
+            Ok(frame) => Cmd::VoiceRoomFrame { data: frame },
             Err(err) => return fail(err),
         },
         AndroidCommand::Quit => Cmd::Quit,

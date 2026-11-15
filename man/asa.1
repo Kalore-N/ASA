@@ -1,6 +1,6 @@
 .\" 中文排版不适合两端对齐
 .ds AD l
-.TH ASA 1 "2026-11-14" "asa 1.7.0" "用户命令"
+.TH ASA 1 "2026-11-15" "asa 1.7.1" "用户命令"
 .nh
 .SH NAME
 asa \- 去中心化 TUI 群聊工具
@@ -215,7 +215,29 @@ TCP 监听端口，默认 7777。未显式指定时会复用
 .B /voice stop
 停止并发送；
 .B /voice play 路径
-播放音频。
+播放音频；
+.B /voice join
+、
+.B /voice leave
+加入或退出频道常驻语音房。
+.B /voice mute
+静音自己的麦克风，
+.B /voice members
+查看房内成员。浏览模式下
+.B v
+也可加入/退出。
+.PP
+二级补全：按
+.B Tab
+除补全指令、成员和路径外，还会补全
+.B /et
+、
+.B /call
+、
+.B /voice
+、
+.B /switch
+的参数；补全弹窗用高亮条标记当前选项。
 .TP
 .BI "/reply " "[编号]"
 回复指定编号的消息。省略编号时列出最近消息的编号。
@@ -320,6 +342,24 @@ Android 同一用户同时只能有一个 VpnService。ASA 使用 per-app VPN，
 1:1 实时通话使用 PCM 16kHz 单声道、20ms/帧。通话信令走现有加密 TCP，
 音频优先走 UDP，2 秒内收不到 UDP 会自动回退到 TCP。通话不录音。
 .PP
+频道语音房是常驻的多人语音：加入后音频帧通过现有加密 TCP 连接广播给房内成员，
+不额外开放端口，建议不超过 8 人。语音房与 1:1 通话互斥。
+.PP
+TUI 默认按顺序尝试
+.B default
+、
+.B pulse
+、
+.B pipewire
+以及各声卡的
+.B plughw:card,device
+（只用能跑起来的那个，`arecord -l` 探测带 1.5 秒超时）；音频工具启动失败或中途退出时会在聊天区
+给出具体原因并自动挂断。可设置
+.B voice.input_device
+与
+.B voice.output_device
+指定设备，指定后不再自动回退。
+.PP
 TUI 浏览模式下
 .B m
 静音、
@@ -336,6 +376,7 @@ Windows TUI 需要 ffmpeg/ffplay，并在
 填写 dshow 设备名。Android 使用系统 AudioRecord/AudioTrack。
 .PP
 语音消息保存为 WAV，通过现有加密文件传输发送；只有手动录制的语音消息会保存。
+Android 输入栏的麦克风按钮可录音并在聊天流中显示可点击语音条。
 .SH "LAN CHANNEL DISCOVERY"
 宿主进入频道后通过 mDNS 广播频道目录。TUI 大厅按
 .B f

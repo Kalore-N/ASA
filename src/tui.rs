@@ -49,6 +49,8 @@ const HELP: &str = "\
                       EasyTier 节点与当前频道内网穿透
 /call <昵称> | accept|reject|hangup|mute|ptt
                       1:1 语音通话
+/voice join|leave|mute|members
+                      频道常驻语音房（多人同时通话）
 /voice <昵称> | stop | play <路径>
                       录制/发送/播放语音消息
 /reply [编号]         回复指定消息；/reply 列出可回复的编号
@@ -59,7 +61,9 @@ Ctrl+Y                把最近内容放入输入行（剪贴板不可用时的�
 /quit                 退出
 回复：Ctrl+R 进入选择，↑/↓ 选择消息，Enter 确认，Esc 取消。
 提及：输入 @昵称 或 @所有人；输入 @ 后按 Tab 从在线成员中补全。
-补全：输入 / 后按 Tab 补全指令；/send 支持成员、文件/文件夹路径补全。
+补全：输入 / 后按 Tab 补全指令和二级参数（/et、/call、/voice、/switch）；
+      /send 与 /voice play 支持文件/文件夹路径补全，@ 支持成员补全。
+语音房：浏览模式按 v 加入/退出，m 静音；语音房与 1:1 通话互斥。
 提示：直接输入文字回车即发送；PgUp/PgDn 翻看历史，End 回到底部。";
 
 const HINTS: &str =
@@ -218,6 +222,13 @@ pub struct App {
     incoming_call: Option<IncomingCall>,
     voice_message: Option<VoiceMessage>,
     ptt_active: bool,
+    /// 频道常驻语音房。
+    voice_room_joined: bool,
+    voice_room_members: Vec<crate::proto::VoiceRoomMember>,
+    voice_room_audio: Option<crate::audio::VoiceAudio>,
+    voice_room_muted: bool,
+    /// 上次向上游发送语音帧的时间，用于限速（避免突发采集把节点事件队列饿死）。
+    voice_last_send: Instant,
     /// 是否捕获鼠标；关闭后终端可拖选文本、使用系统右键菜单。
     mouse_capture: bool,
 }
@@ -289,6 +300,11 @@ impl App {
             incoming_call: None,
             voice_message: None,
             ptt_active: false,
+            voice_room_joined: false,
+            voice_room_members: Vec::new(),
+            voice_room_audio: None,
+            voice_room_muted: false,
+            voice_last_send: Instant::now(),
             mouse_capture: true,
         };
         app.push_system("欢迎使用 ASA。直接输入文字回车发送；/help 查看命令；/invite 获取邀请码。");
@@ -445,12 +461,22 @@ impl App {
                 call_id,
             } => {
                 self.incoming_call = None;
+                if self.voice_room_joined {
+                    let _ = self.cmd.send(Cmd::VoiceRoomLeave);
+                    self.voice_room_joined = false;
+                    self.voice_room_audio = None;
+                }
                 let audio = if self.voice.enabled {
                     match crate::audio::check_tools().and_then(|_| crate::audio::start(&self.voice))
                     {
                         Ok(audio) => Some(audio),
                         Err(err) => {
                             self.set_status(format!("音频启动失败: {err}"), true);
+                            self.push_system(format!(
+                                "语音通话未能开始：{err}\n\
+                                 请检查系统声音服务/麦克风；仍失败时在配置中设置 \
+                                 voice.input_device 与 voice.output_device（例如 default 或 plughw:0,0）。"
+                            ));
                             let _ = self.cmd.send(Cmd::HangupCall);
                             None
                         }
@@ -466,7 +492,18 @@ impl App {
                     audio,
                     muted: false,
                 });
-                self.set_status(format!("与 {nick} 的通话已接通"), false);
+                let device = self
+                    .active_call
+                    .as_ref()
+                    .and_then(|call| call.audio.as_ref())
+                    .map(|audio| {
+                        format!(
+                            " · 输入 {} · 输出 {}",
+                            audio.input_device, audio.output_device
+                        )
+                    })
+                    .unwrap_or_default();
+                self.set_status(format!("与 {nick} 的通话已接通{device}"), false);
             }
             NodeEvent::CallEnded { nick, reason, .. } => {
                 self.active_call = None;
@@ -476,6 +513,31 @@ impl App {
             NodeEvent::AudioFrame { data } => {
                 if let Some(call) = self.active_call.as_ref() {
                     if let Some(audio) = call.audio.as_ref() {
+                        audio.player.play(data);
+                    }
+                }
+            }
+            NodeEvent::VoiceRoomState { joined, members } => {
+                self.voice_room_members = members;
+                if joined && !self.voice_room_joined {
+                    self.voice_room_joined = true;
+                    if let Err(err) = self.start_voice_room_audio() {
+                        let _ = self.cmd.send(Cmd::VoiceRoomLeave);
+                        self.voice_room_joined = false;
+                        self.voice_room_audio = None;
+                        self.set_status(format!("语音房音频启动失败: {err}"), true);
+                        self.push_system(format!(
+                            "语音房未能开始：{err}\n请检查系统声音服务/麦克风或配置 voice.input_device。"
+                        ));
+                    }
+                } else if !joined && self.voice_room_joined {
+                    self.voice_room_joined = false;
+                    self.voice_room_audio = None;
+                }
+            }
+            NodeEvent::VoiceRoomAudio { data, .. } => {
+                if self.voice_room_joined {
+                    if let Some(audio) = self.voice_room_audio.as_ref() {
                         audio.player.play(data);
                     }
                 }
@@ -719,6 +781,7 @@ impl App {
                 self.input_mode = InputMode::Insert;
                 self.insert_text("/");
             }
+            KeyCode::Char('v') => self.toggle_voice_room(),
             KeyCode::Char('j') | KeyCode::Down => self.scroll_down(self.scroll_step as usize),
             KeyCode::Char('k') | KeyCode::Up => self.scroll_up(self.scroll_step as usize),
             KeyCode::Char('g') => self.scroll_top(),
@@ -755,17 +818,110 @@ impl App {
         self.follow = true;
     }
 
+    /// 语音帧发送限速：每帧间隔最多发一帧，丢弃积压的更旧帧以降低延迟。
+    fn voice_frame_due(&mut self) -> bool {
+        let interval = Duration::from_millis(self.voice.frame_ms.clamp(10, 60) as u64);
+        if self.voice_last_send.elapsed() < interval {
+            return false;
+        }
+        self.voice_last_send = Instant::now();
+        true
+    }
+
     fn pump_voice(&mut self) {
         let push_to_talk = self.voice.push_to_talk;
         let ptt = self.ptt_active;
+        let mut latest = None;
+        let mut failed: Option<String> = None;
         if let Some(call) = self.active_call.as_mut() {
-            if let Some(audio) = call.audio.as_ref() {
+            if let Some(audio) = call.audio.as_mut() {
                 while let Some(frame) = audio.capture.try_recv() {
                     if !call.muted && (!push_to_talk || ptt) {
-                        let _ = self.cmd.send(Cmd::AudioFrame { data: frame });
+                        latest = Some(frame);
                     }
                 }
+                failed = audio.capture.failure().or_else(|| audio.player.failure());
             }
+        }
+        if let Some(frame) = latest {
+            if self.voice_frame_due() {
+                let _ = self.cmd.send(Cmd::AudioFrame { data: frame });
+            }
+        }
+        if let Some(err) = failed {
+            let nick = self
+                .active_call
+                .as_ref()
+                .map(|call| call.nick.clone())
+                .unwrap_or_default();
+            self.active_call = None;
+            let _ = self.cmd.send(Cmd::HangupCall);
+            self.set_status(format!("与 {nick} 的通话中断: {err}"), true);
+        }
+    }
+
+    fn start_voice_room_audio(&mut self) -> anyhow::Result<()> {
+        if !self.voice.enabled {
+            anyhow::bail!("语音功能未启用");
+        }
+        if self.active_call.is_some() {
+            anyhow::bail!("通话中不能加入语音房");
+        }
+        if self.voice_message.is_some() {
+            anyhow::bail!("录音中不能加入语音房");
+        }
+        crate::audio::check_tools()?;
+        let audio = crate::audio::start(&self.voice)?;
+        self.push_system(format!(
+            "语音房音频：输入 {} · 输出 {}",
+            audio.input_device, audio.output_device
+        ));
+        self.voice_room_audio = Some(audio);
+        Ok(())
+    }
+
+    fn toggle_voice_room(&mut self) {
+        if self.voice_room_joined {
+            let _ = self.cmd.send(Cmd::VoiceRoomLeave);
+            self.voice_room_joined = false;
+            self.voice_room_audio = None;
+            self.set_status("正在退出语音房…", false);
+            return;
+        }
+        if self.active_call.is_some() {
+            self.set_status("通话中不能加入语音房，请先挂断", true);
+            return;
+        }
+        if self.voice_message.is_some() {
+            self.set_status("录音中不能加入语音房，请先 /voice stop", true);
+            return;
+        }
+        let _ = self.cmd.send(Cmd::VoiceRoomJoin);
+        self.set_status("正在加入语音房…", false);
+    }
+
+    fn pump_voice_room(&mut self) {
+        let muted = self.voice_room_muted;
+        let mut latest = None;
+        let mut failed: Option<String> = None;
+        if let Some(audio) = self.voice_room_audio.as_mut() {
+            while let Some(frame) = audio.capture.try_recv() {
+                if !muted {
+                    latest = Some(frame);
+                }
+            }
+            failed = audio.capture.failure().or_else(|| audio.player.failure());
+        }
+        if let Some(frame) = latest {
+            if self.voice_frame_due() {
+                let _ = self.cmd.send(Cmd::VoiceRoomFrame { data: frame });
+            }
+        }
+        if let Some(err) = failed {
+            self.voice_room_audio = None;
+            self.voice_room_joined = false;
+            let _ = self.cmd.send(Cmd::VoiceRoomLeave);
+            self.set_status(format!("语音房音频中断: {err}"), true);
         }
     }
 
@@ -964,6 +1120,54 @@ impl App {
         let action = parts.next().unwrap_or("").trim();
         let arg = parts.next().unwrap_or("").trim();
         match action {
+            "join" => {
+                if self.voice_room_joined {
+                    self.set_status("已在语音房中", false);
+                } else {
+                    self.toggle_voice_room();
+                }
+            }
+            "leave" => {
+                if self.voice_room_joined {
+                    let _ = self.cmd.send(Cmd::VoiceRoomLeave);
+                    self.voice_room_joined = false;
+                    self.voice_room_audio = None;
+                    self.set_status("正在退出语音房…", false);
+                } else {
+                    self.set_status("当前不在语音房", true);
+                }
+            }
+            "mute" => {
+                if self.voice_room_joined {
+                    self.voice_room_muted = !self.voice_room_muted;
+                    self.set_status(
+                        if self.voice_room_muted {
+                            "语音房已静音"
+                        } else {
+                            "语音房已取消静音"
+                        },
+                        false,
+                    );
+                } else {
+                    self.set_status("当前不在语音房", true);
+                }
+            }
+            "members" => {
+                if !self.voice_room_joined {
+                    self.set_status("当前不在语音房", true);
+                } else {
+                    let mut lines = vec![format!("语音房 {} 人：", self.voice_room_members.len())];
+                    for member in &self.voice_room_members {
+                        lines.push(format!(
+                            "- {} ({})",
+                            member.nick,
+                            util::short_id(&member.pubkey)
+                        ));
+                    }
+                    lines.push("/voice leave 退出，v 也可切换".to_string());
+                    self.push_system(lines.join("\n"));
+                }
+            }
             "play" => {
                 if arg.is_empty() {
                     self.set_status("用法: /voice play <WAV 路径>", true);
@@ -999,12 +1203,18 @@ impl App {
             "" => {
                 self.push_system(
                     "语音消息：/voice <昵称> 开始录音，/voice stop 停止并发送；\
-                     /voice play <路径> 播放。通话录音不保存，语音消息由你手动选择。",
+                     /voice play <路径> 播放。\n\
+                     频道语音房：/voice join 加入，/voice leave 退出，/voice mute 静音，\
+                     /voice members 看成员；浏览模式按 v 也可切换。",
                 );
             }
             target => {
                 if self.active_call.is_some() {
                     self.set_status("通话中不能录制语音消息，请先挂断", true);
+                    return;
+                }
+                if self.voice_room_joined {
+                    self.set_status("语音房中不能录制语音消息，请先 /voice leave", true);
                     return;
                 }
                 if self.voice_message.is_some() {
@@ -1438,6 +1648,74 @@ impl App {
             }
             [cmd, _targets] if cmd.eq_ignore_ascii_case("/send") => {
                 Some((token_start, path_candidates(&token)))
+            }
+            [cmd] if cmd.eq_ignore_ascii_case("/et") => {
+                let candidates = ["status", "on", "off", "add", "list", "remove"]
+                    .iter()
+                    .filter(|sub| sub.starts_with(&token_lower))
+                    .map(|sub| sub.to_string())
+                    .collect();
+                Some((token_start, candidates))
+            }
+            [cmd, sub] if cmd.eq_ignore_ascii_case("/et") && sub.eq_ignore_ascii_case("remove") => {
+                let candidates = self
+                    .config_nodes
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, _node)| (idx + 1).to_string())
+                    .filter(|index| index.starts_with(&token))
+                    .collect();
+                Some((token_start, candidates))
+            }
+            [cmd] if cmd.eq_ignore_ascii_case("/call") => {
+                let mut candidates: Vec<String> = ["accept", "reject", "hangup", "mute", "ptt"]
+                    .iter()
+                    .filter(|sub| sub.starts_with(&token_lower))
+                    .map(|sub| sub.to_string())
+                    .collect();
+                candidates.extend(
+                    self.members
+                        .iter()
+                        .filter(|m| !m.me && !m.nick.is_empty())
+                        .filter(|m| m.nick.to_lowercase().starts_with(&token_lower))
+                        .map(|m| m.nick.clone()),
+                );
+                Some((token_start, candidates))
+            }
+            [cmd] if cmd.eq_ignore_ascii_case("/voice") => {
+                let mut candidates: Vec<String> = ["join", "leave", "play", "stop"]
+                    .iter()
+                    .filter(|sub| sub.starts_with(&token_lower))
+                    .map(|sub| sub.to_string())
+                    .collect();
+                candidates.extend(
+                    self.members
+                        .iter()
+                        .filter(|m| !m.me && !m.nick.is_empty())
+                        .filter(|m| m.nick.to_lowercase().starts_with(&token_lower))
+                        .map(|m| m.nick.clone()),
+                );
+                Some((token_start, candidates))
+            }
+            [cmd, sub]
+                if cmd.eq_ignore_ascii_case("/voice") && sub.eq_ignore_ascii_case("play") =>
+            {
+                Some((token_start, path_candidates(&token)))
+            }
+            [cmd] if cmd.eq_ignore_ascii_case("/switch") => {
+                let candidates = self
+                    .groups
+                    .iter()
+                    .map(|group| {
+                        if group.name.is_empty() {
+                            group.id.clone()
+                        } else {
+                            group.name.clone()
+                        }
+                    })
+                    .filter(|name| name.to_lowercase().starts_with(&token_lower))
+                    .collect();
+                Some((token_start, candidates))
             }
             [cmd] if cmd.eq_ignore_ascii_case("/reply") => {
                 let candidates = self
@@ -2196,7 +2474,16 @@ impl App {
                 " 选择接收人 · 空格选择 · Enter 确认 · Esc 取消 ",
                 Style::default().fg(Color::Yellow),
             )));
-        frame.render_stateful_widget(List::new(items).block(block), rect, &mut list_state);
+        let list = List::new(items)
+            .block(block)
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("▸ ");
+        frame.render_stateful_widget(list, rect, &mut list_state);
     }
 
     fn draw_status(&self, frame: &mut Frame, area: Rect) {
@@ -2339,7 +2626,16 @@ impl App {
                 format!(" 补全 {}/{} ", state.index + 1, state.candidates.len()),
                 Style::default().fg(Color::Yellow),
             )));
-        frame.render_stateful_widget(List::new(items).block(block), rect, &mut list_state);
+        let list = List::new(items)
+            .block(block)
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("▸ ");
+        frame.render_stateful_widget(list, rect, &mut list_state);
     }
 
     fn draw_input(&self, frame: &mut Frame, area: Rect) {
@@ -2403,6 +2699,20 @@ impl App {
                 Style::default().fg(Color::Green),
             ));
         }
+        if self.voice_room_joined {
+            let count = self.voice_room_members.len();
+            spans.push(Span::styled(
+                format!(
+                    "  语音房: {count} 人{}",
+                    if self.voice_room_muted {
+                        " (静音)"
+                    } else {
+                        ""
+                    }
+                ),
+                Style::default().fg(Color::Magenta),
+            ));
+        }
         if self.scroll > 0 {
             let back = if self.vim_mode {
                 "G 回到底部"
@@ -2460,6 +2770,7 @@ pub fn run(handle: NodeHandle, cfg: UiConfig) -> Result<TuiAction> {
             app.on_event(event);
         }
         app.pump_voice();
+        app.pump_voice_room();
         if event::poll(Duration::from_millis(60))? {
             match event::read()? {
                 Event::Key(key) => {
@@ -2832,6 +3143,11 @@ mod tests {
             incoming_call: None,
             voice_message: None,
             ptt_active: false,
+            voice_room_joined: false,
+            voice_room_members: Vec::new(),
+            voice_room_audio: None,
+            voice_room_muted: false,
+            voice_last_send: Instant::now(),
             mouse_capture: true,
             listen: "127.0.0.1:7777".parse().unwrap(),
             invite: String::new(),

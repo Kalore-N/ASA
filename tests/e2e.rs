@@ -996,3 +996,133 @@ async fn voice_call_signaling_and_audio_frame() {
     node_a.cmd.send(Cmd::Quit).ok();
     node_b.cmd.send(Cmd::Quit).ok();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn voice_room_join_and_audio_frame() {
+    let root_a = unique_root("voice-room-a");
+    let root_b = unique_root("voice-room-b");
+    let identity_a = Identity::generate();
+    let identity_b = Identity::generate();
+    let room = RoomConfig::create(&identity_a);
+    let (node_a, _dirs_a) = start_node(
+        &root_a,
+        "alice",
+        identity_a.clone(),
+        &room,
+        room.created_at,
+        8 * 1024 * 1024,
+    )
+    .await;
+    let (node_b, _dirs_b) = start_node(
+        &root_b,
+        "bob",
+        identity_b.clone(),
+        &room,
+        asa::util::now_ms(),
+        8 * 1024 * 1024,
+    )
+    .await;
+    connect(&node_b, &node_a);
+    assert!(
+        wait_event(&node_b.events, Duration::from_secs(10), |event| {
+            matches!(event, NodeEvent::Members { members, .. } if members.len() >= 2)
+        })
+        .is_some(),
+        "双方应连接"
+    );
+
+    node_a.cmd.send(Cmd::VoiceRoomJoin).unwrap();
+    assert!(
+        wait_event(&node_a.events, Duration::from_secs(5), |event| {
+            matches!(
+                event,
+                NodeEvent::VoiceRoomState { joined: true, members }
+                    if members.iter().any(|m| m.pubkey == node_a.pubkey)
+            )
+        })
+        .is_some(),
+        "A 应进入语音房"
+    );
+    assert!(
+        wait_event(&node_b.events, Duration::from_secs(5), |event| {
+            matches!(
+                event,
+                NodeEvent::VoiceRoomState { members, .. }
+                    if members.iter().any(|m| m.pubkey == node_a.pubkey)
+            )
+        })
+        .is_some(),
+        "B 应看到 A 加入语音房"
+    );
+
+    node_b.cmd.send(Cmd::VoiceRoomJoin).unwrap();
+    assert!(
+        wait_event(&node_b.events, Duration::from_secs(5), |event| {
+            matches!(
+                event,
+                NodeEvent::VoiceRoomState { joined: true, members }
+                    if members.len() >= 2
+            )
+        })
+        .is_some(),
+        "B 应看到语音房里的两个人"
+    );
+    assert!(
+        wait_event(&node_a.events, Duration::from_secs(5), |event| {
+            matches!(
+                event,
+                NodeEvent::VoiceRoomState { joined: true, members }
+                    if members.len() >= 2
+            )
+        })
+        .is_some(),
+        "A 应看到语音房里的两个人"
+    );
+
+    let frame = vec![9u8; 640];
+    node_a
+        .cmd
+        .send(Cmd::VoiceRoomFrame {
+            data: frame.clone(),
+        })
+        .unwrap();
+    assert!(
+        wait_event(&node_b.events, Duration::from_secs(6), |event| matches!(
+            event,
+            NodeEvent::VoiceRoomAudio { data, .. } if data == &frame
+        ))
+        .is_some(),
+        "B 应收到 A 的语音房 PCM 帧"
+    );
+    node_b
+        .cmd
+        .send(Cmd::VoiceRoomFrame {
+            data: frame.clone(),
+        })
+        .unwrap();
+    assert!(
+        wait_event(&node_a.events, Duration::from_secs(6), |event| {
+            matches!(
+                event,
+                NodeEvent::VoiceRoomAudio { data, .. } if data == &frame
+            )
+        })
+        .is_some(),
+        "A 应收到 B 的语音房 PCM 帧"
+    );
+
+    node_a.cmd.send(Cmd::VoiceRoomLeave).unwrap();
+    assert!(
+        wait_event(&node_b.events, Duration::from_secs(5), |event| {
+            matches!(
+                event,
+                NodeEvent::VoiceRoomState { joined: true, members }
+                    if members.iter().all(|m| m.pubkey != node_a.pubkey)
+            )
+        })
+        .is_some(),
+        "B 应看到 A 离开语音房"
+    );
+    node_a.cmd.send(Cmd::Quit).ok();
+    node_b.cmd.send(Cmd::Quit).ok();
+}

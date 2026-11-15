@@ -16,6 +16,8 @@ data class ChatMessage(
     val system: Boolean,
     val mentionsMe: Boolean,
     val reply: ReplyRef?,
+    /** 语音消息的本地 WAV 路径；非空时聊天气泡显示成可点击语音条。 */
+    val voicePath: String? = null,
 )
 
 data class Member(
@@ -72,6 +74,18 @@ data class CallState(
     val speaker: Boolean = false,
 )
 
+data class VoiceRoomMember(
+    val pubkey: String,
+    val nick: String,
+)
+
+data class VoiceRoomState(
+    val joined: Boolean = false,
+    val members: List<VoiceRoomMember> = emptyList(),
+    val muted: Boolean = false,
+    val speaker: Boolean = false,
+)
+
 data class UiState(
     val screen: Screen = Screen.Connect,
     val connecting: Boolean = false,
@@ -101,6 +115,11 @@ data class UiState(
     val voiceRecording: Boolean = false,
     val voiceTarget: String = "",
     val lastVoicePath: String? = null,
+    val voiceRoom: VoiceRoomState = VoiceRoomState(),
+    /** 录好但还没选接收人的语音消息。 */
+    val pendingVoicePath: String? = null,
+    /** 正在播放的语音条路径。 */
+    val playingVoice: String? = null,
 ) {
     val hostNick: String
         get() = members.firstOrNull { it.pubkey == host }?.nick ?: "—"

@@ -2,7 +2,7 @@
 
 这是我第一次尝试vibe coding的产物，随便写了点小东西玩玩
 
-当前版本：**1.7.0**
+当前版本：**1.7.1**
 
 ASA 是一个用 Rust 编写的**完全去中心化**终端频道工具：没有中心服务器，每个参与者都是对等节点。支持局域网自动发现、跨网手动连接、端到端加密、本地聊天记录（JSONL）以及文件传输。
 
@@ -15,11 +15,12 @@ ASA 是一个用 Rust 编写的**完全去中心化**终端频道工具：没有
 - **端到端加密**：群密钥 ChaCha20-Poly1305 加密每条消息，ed25519 签名身份，邀请码之外的节点无法加入。
 - **本地聊天记录**：每个节点把消息写入自己的 JSONL 日志，不同步历史（加入前的消息不会补发）。
 - **提及与回复**：输入 `@昵称` / `@所有人` 提醒成员；`Ctrl+R` 选择消息或 `/reply <编号>` 精确回复，引用摘要随消息发送。
-- **指令补全**：按 `Tab` 补全聊天指令、成员昵称、文件编号和消息编号。
+- **指令补全**：按 `Tab` 补全聊天指令、二级参数（`/et`、`/call`、`/voice`、`/switch`）、成员昵称、文件路径、文件编号和消息编号；补全弹窗会高亮当前选中项。
 - **跨网中继**：内置 `asa relay`，没有公网 IP 的设备也能通过中继加入群；中继只转发加密字节流。
 - **群固定**：群入口、群密钥和群文件可持久化/导出；多入口邀请码与中继让所有人退出后仍能重新恢复群。
 - **多群管理**：本机可保存多个群，按自定义名称选择、切换；群配置分别保存在 `rooms/<群 ID>.json`。
 - **文件传输**：点对点直连、分块传输、SHA-256 校验，只在双方在线时可用，默认单文件上限 100 MB。
+- **语音**：1:1 通话、语音消息，以及频道常驻多人语音房；Android 支持一键录音和可点击语音条。
 - **跨平台**：使用 `crossterm` + `ratatui`，可在 Linux、macOS、Windows 上运行。
 
 ## 快速开始
@@ -173,6 +174,7 @@ Android 同一用户同时只能有一个 **VpnService**。ASA 使用 per-app VP
 | `Ctrl+C` | 退出 |
 | `Ctrl+L` | 清屏（不影响本地日志） |
 | `Ctrl+U` | 清空输入行 |
+| `v` | 加入/退出频道语音房（浏览模式） |
 
 输入 `@` 后按 `Tab` 可补全在线成员昵称，支持 `@所有人`。被提及的消息会高亮并在状态栏提示。
 
@@ -196,6 +198,7 @@ Android 同一用户同时只能有一个 **VpnService**。ASA 使用 per-app VP
 | `/switch <名称或 ID>` | 切换到指定频道 |
 | `/et [status\|on\|off\|add <地址>\|list\|remove <编号>]` | 管理 EasyTier 节点与当前频道内网穿透 |
 | `/call <昵称> \| accept \| reject \| hangup \| mute \| ptt` | 1:1 语音通话 |
+| `/voice join` / `leave` / `mute` / `members` | 加入、退出、静音频道语音房、查看成员 |
 | `/voice <昵称> \| stop \| play <路径>` | 录制、发送、播放语音消息 |
 | `/reply [编号]` | 回复指定消息；不带编号时列出最近消息的编号 |
 | `/clear` | 清空当前屏幕 |
@@ -379,12 +382,32 @@ Android：
 - 来电弹窗接听/拒绝；通话条支持静音、免提、挂断
 - 麦克风权限和前台服务 `microphone`
 
+### 频道语音房（多人同时通话）
+
+- 进入频道后 `/voice join`（或浏览模式按 `v`）加入，`/voice leave` 退出；不加入不会收到音频
+- 房内所有成员互相收发音频，适合小规模常驻语音（建议不超过 8 人）
+- `/voice mute` 静音自己的麦克风，`/voice members` 查看房内成员
+- 音频帧使用现有加密 TCP 连接广播（每个 20ms 帧单独签名/加密），不额外开放端口
+- 语音房与 1:1 通话互斥：在语音房中发起/接听通话会被拒绝，避免同时占用麦克风
+- Android 顶部「语音房」按钮可加入/退出、查看成员、静音和免提
+
 ### 语音消息
 
 - TUI `/voice <昵称>` 开始录音，`/voice stop` 停止并发送；`/voice play <路径>` 播放
-- Android 菜单「发送语音消息」选择成员录音，再点「停止并发送」；收到后「播放最近语音」
+- Android 输入栏麦克风按钮：点一下开始录音，再点停止；未选接收人时会弹出成员选择
+- Android 聊天流里收到的语音消息显示为可点击语音条，点击播放，再次点击停止
 - 语音消息保存为 WAV，走现有加密文件传输；对方接受后保存到下载目录
 - 通话不自动录音，避免误录双方声音
+
+### 没有声音时
+
+- TUI 会在音频工具启动失败或中途退出时直接提示原因（例如设备被占用、采样率不支持），并自动挂断
+- 默认按顺序尝试 `default` → `pulse` → `pipewire` → 各声卡的 `plughw:card,device`（只用能跑起来的那个），
+  并在状态栏/聊天区显示实际使用的设备；`arecord -l` 探测有 1.5 秒超时，不会卡住界面
+- 仍无声时在 `config.json` 的 `voice.input_device` / `voice.output_device` 手写设备名（此时不再自动回退），
+  例如 `default`、`pulse` 或 `plughw:1,2`；`arecord -l`、`aplay -l` 可列出设备
+- 如果对方能听到你但你听不到对方，检查 `voice.output_device`；反之检查 `voice.input_device`
+- 两个程序同时占用同一块声卡时，后启动的一方可能失败；关闭占用麦克风的程序或配置不同的设备
 
 ### 依赖
 
@@ -490,25 +513,25 @@ GitHub Releases 提供各平台的可运行产物；源码仓库不包含构建�
 
 | 平台 | 文件 | 说明 |
 | --- | --- | --- |
-| Linux x86-64 | `asa-1.7.0-linux-x86_64.tar.gz` | 含 `asa`、`easytier-core`、`easytier-cli` |
-| Windows x86-64 | `asa-1.7.0-windows-x86_64.zip` | 含 `asa.exe`、EasyTier、`wintun.dll` |
-| Android arm64 | `asa-1.7.0-android-arm64.apk` | 真机推荐；含 arm64 EasyTier 原生库 |
-| Android x86_64 | `asa-1.7.0-android-x86_64.apk` | 模拟器 / x86_64 平板 |
-| Arch Linux x86-64 | `asa-1.7.0-1-x86_64.pkg.tar.zst` | 含二进制、EasyTier、man、桌面入口与图标 |
-| Debian / Ubuntu amd64 | `asa_1.7.0_amd64.deb` | 含二进制、EasyTier、man、桌面入口与图标 |
-| Fedora / RHEL x86-64 | `asa-1.7.0-1.x86_64.rpm` | 含二进制、EasyTier、man、桌面入口与图标 |
+| Linux x86-64 | `asa-1.7.1-linux-x86_64.tar.gz` | 含 `asa`、`easytier-core`、`easytier-cli` |
+| Windows x86-64 | `asa-1.7.1-windows-x86_64.zip` | 含 `asa.exe`、EasyTier、`wintun.dll` |
+| Android arm64 | `asa-1.7.1-android-arm64.apk` | 真机推荐；含 arm64 EasyTier 原生库 |
+| Android x86_64 | `asa-1.7.1-android-x86_64.apk` | 模拟器 / x86_64 平板 |
+| Arch Linux x86-64 | `asa-1.7.1-1-x86_64.pkg.tar.zst` | 含二进制、EasyTier、man、桌面入口与图标 |
+| Debian / Ubuntu amd64 | `asa_1.7.1_amd64.deb` | 含二进制、EasyTier、man、桌面入口与图标 |
+| Fedora / RHEL x86-64 | `asa-1.7.1-1.x86_64.rpm` | 含二进制、EasyTier、man、桌面入口与图标 |
 
 ### Linux 发行版包
 
 ```bash
 # Arch
-sudo pacman -U asa-1.7.0-1-x86_64.pkg.tar.zst
+sudo pacman -U asa-1.7.1-1-x86_64.pkg.tar.zst
 
 # Debian / Ubuntu
-sudo apt install ./asa_1.7.0_amd64.deb
+sudo apt install ./asa_1.7.1_amd64.deb
 
 # Fedora / RHEL
-sudo dnf install ./asa-1.7.0-1.x86_64.rpm
+sudo dnf install ./asa-1.7.1-1.x86_64.rpm
 ```
 
 安装后直接运行 `asa`，或从应用菜单打开 ASA。安装包是静态二进制，不依赖系统 Rust 工具链。
@@ -536,7 +559,8 @@ Android 版说明：
 - 进入频道时会从本地 JSONL 加载最近历史；`/sync` 可以继续向在线成员拉取
 - 频道列表顶部会显示局域网内发现的频道，设置密码的频道需要输入密码
 - 查看文件传输进度，或直接打开系统文件管理器中的 ASA 下载目录
-- 聊天页电话按钮发起 1:1 语音通话；菜单可发送/播放语音消息
+- 聊天页电话按钮发起 1:1 语音通话；顶部语音房按钮加入频道多人语音
+- 输入栏麦克风按钮录制语音消息；聊天流语音条点击播放/停止
 - 首次使用语音会请求麦克风权限
 - 长按消息正文进入系统文本选择，可只复制正文；向左滑动消息可回复
 

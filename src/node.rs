@@ -127,6 +127,14 @@ pub enum Cmd {
     AudioFrame {
         data: Vec<u8>,
     },
+    /// 加入频道常驻语音房。
+    VoiceRoomJoin,
+    /// 离开频道常驻语音房。
+    VoiceRoomLeave,
+    /// 语音房本地采集的一帧 PCM。
+    VoiceRoomFrame {
+        data: Vec<u8>,
+    },
     /// 连接 `ip:port` 或 `host:port`。
     Connect(String),
     DialAddr(SocketAddr),
@@ -242,6 +250,17 @@ pub enum NodeEvent {
     },
     /// 收到一帧 PCM 音频。
     AudioFrame {
+        data: Vec<u8>,
+    },
+    /// 频道语音房状态（自己是否在房内、房内成员）。
+    VoiceRoomState {
+        joined: bool,
+        members: Vec<proto::VoiceRoomMember>,
+    },
+    /// 收到语音房里其他人的一帧 PCM 音频。
+    VoiceRoomAudio {
+        from: String,
+        from_nick: String,
         data: Vec<u8>,
     },
     /// 本机频道名称变更。
@@ -595,6 +614,9 @@ impl Node {
             sync_history: cfg.sync_history,
             sync_count: cfg.sync_count,
             call: None,
+            voice_room_members: std::collections::BTreeSet::new(),
+            voice_room_joined: false,
+            voice_room_seq: 0,
         };
 
         let handle = NodeHandle {
@@ -654,6 +676,10 @@ struct NodeState {
     sync_history: bool,
     sync_count: u32,
     call: Option<CallSession>,
+    /// 频道常驻语音房成员（含自己）；未加入时为空。
+    voice_room_members: std::collections::BTreeSet<String>,
+    voice_room_joined: bool,
+    voice_room_seq: u64,
 }
 
 impl NodeState {
@@ -687,8 +713,9 @@ impl NodeState {
         let mut tick = tokio::time::interval(Duration::from_millis(500));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
+            // 不要用 biased：语音帧会让 cmd 队列持续有消息，若总是优先 cmd，
+            // 网络事件（来电、聊天、语音房成员变更）会被饿死，表现为“能接通但没声音”。
             tokio::select! {
-                biased;
                 cmd = cmd_rx.recv() => {
                     match cmd {
                         Some(cmd) => {
@@ -756,6 +783,9 @@ impl NodeState {
             Cmd::RejectCall { call_id } => self.reject_call(&call_id),
             Cmd::HangupCall => self.hangup_call("本机挂断"),
             Cmd::AudioFrame { data } => self.send_audio_frame(data),
+            Cmd::VoiceRoomJoin => self.voice_room_join(),
+            Cmd::VoiceRoomLeave => self.voice_room_leave(),
+            Cmd::VoiceRoomFrame { data } => self.send_voice_room_frame(data),
             Cmd::Connect(text) => self.connect_text(&text),
             Cmd::DialAddr(addr) => {
                 if is_self_target(self.ctx.listen, &self.self_ips, addr) {
@@ -1062,6 +1092,9 @@ impl NodeState {
             let _ = reason;
             self.system(format!("{} 离线了 ({})", removed.nick, short_id(peer)));
         }
+        if self.voice_room_members.remove(peer) {
+            self.emit_voice_room();
+        }
         if self
             .call
             .as_ref()
@@ -1223,6 +1256,10 @@ impl NodeState {
             self.info("当前已有通话");
             return;
         }
+        if self.voice_room_joined {
+            self.info("正在语音房中，请先 /voice leave 再发起 1:1 通话");
+            return;
+        }
         let Some(peer) = self.peers.get(target) else {
             self.info("对方不在线，无法发起通话");
             return;
@@ -1334,6 +1371,96 @@ impl NodeState {
             );
         }
         self.end_call(reason);
+    }
+
+    // ------------------------------------------------------------ 频道语音房
+
+    fn voice_room_snapshot(&self) -> Vec<proto::VoiceRoomMember> {
+        self.voice_room_members
+            .iter()
+            .map(|pubkey| proto::VoiceRoomMember {
+                pubkey: pubkey.clone(),
+                nick: self.nick_of(pubkey),
+            })
+            .collect()
+    }
+
+    fn emit_voice_room(&mut self) {
+        let members = self.voice_room_snapshot();
+        let _ = self.ev.send(NodeEvent::VoiceRoomState {
+            joined: self.voice_room_joined,
+            members,
+        });
+    }
+
+    fn voice_room_join(&mut self) {
+        if self.voice_room_joined {
+            self.info("已在语音房中");
+            return;
+        }
+        if self.call.is_some() {
+            self.info("通话中不能加入语音房，请先挂断");
+            return;
+        }
+        self.voice_room_joined = true;
+        self.voice_room_members.insert(self.ctx.pubkey.clone());
+        let payload = Payload::VoiceRoomJoin;
+        if let Ok(raw) = proto::build_envelope(
+            &self.ctx.key,
+            &self.ctx.signing,
+            &self.ctx.pubkey,
+            &self.ctx.room,
+            &payload,
+        ) {
+            self.broadcast(&raw, &[]);
+        }
+        self.emit_voice_room();
+        self.info("已加入频道语音房，再输入 /voice leave 退出");
+    }
+
+    fn voice_room_leave(&mut self) {
+        if !self.voice_room_joined {
+            self.info("当前不在语音房");
+            return;
+        }
+        self.voice_room_joined = false;
+        self.voice_room_members.remove(&self.ctx.pubkey);
+        let payload = Payload::VoiceRoomLeave;
+        if let Ok(raw) = proto::build_envelope(
+            &self.ctx.key,
+            &self.ctx.signing,
+            &self.ctx.pubkey,
+            &self.ctx.room,
+            &payload,
+        ) {
+            self.broadcast(&raw, &[]);
+        }
+        self.emit_voice_room();
+        self.info("已退出频道语音房");
+    }
+
+    fn send_voice_room_frame(&mut self, data: Vec<u8>) {
+        if !self.voice_room_joined || data.is_empty() || data.len() > 4096 {
+            return;
+        }
+        if self.call.is_some() {
+            return;
+        }
+        self.voice_room_seq = self.voice_room_seq.wrapping_add(1);
+        let seq = self.voice_room_seq;
+        let payload = Payload::VoiceRoomFrame {
+            seq,
+            data: crypto::b64e(&data),
+        };
+        if let Ok(raw) = proto::build_envelope(
+            &self.ctx.key,
+            &self.ctx.signing,
+            &self.ctx.pubkey,
+            &self.ctx.room,
+            &payload,
+        ) {
+            self.broadcast(&raw, &[]);
+        }
     }
 
     fn send_audio_frame(&mut self, data: Vec<u8>) {
@@ -1562,6 +1689,16 @@ impl NodeState {
                 }
             }
             Payload::CallInvite { call_id, port } => {
+                if self.voice_room_joined {
+                    let _ = self.send_to(
+                        &from,
+                        &Payload::CallReject {
+                            call_id,
+                            reason: "对方正在语音房".to_string(),
+                        },
+                    );
+                    return;
+                }
                 if self.call.is_some() {
                     let _ = self.send_to(
                         &from,
@@ -1672,6 +1809,55 @@ impl NodeState {
                         }
                     }
                 }
+            }
+            Payload::VoiceRoomJoin => {
+                if !self.peers.contains_key(&from) {
+                    return;
+                }
+                self.voice_room_members.insert(from.clone());
+                self.emit_voice_room();
+                if self.voice_room_joined {
+                    let members = self.voice_room_snapshot();
+                    let _ = self.send_to(&from, &Payload::VoiceRoomState { members });
+                }
+            }
+            Payload::VoiceRoomLeave => {
+                if self.voice_room_members.remove(&from) {
+                    self.emit_voice_room();
+                }
+            }
+            Payload::VoiceRoomState { members } => {
+                if !self.voice_room_joined {
+                    return;
+                }
+                for member in members {
+                    if member.pubkey == self.ctx.pubkey {
+                        continue;
+                    }
+                    if !self.peers.contains_key(&member.pubkey) {
+                        continue;
+                    }
+                    self.voice_room_members.insert(member.pubkey);
+                }
+                self.voice_room_members.insert(self.ctx.pubkey.clone());
+                self.emit_voice_room();
+            }
+            Payload::VoiceRoomFrame { seq: _, data } => {
+                if !self.voice_room_joined || !self.voice_room_members.contains(&from) {
+                    return;
+                }
+                let Ok(bytes) = crypto::b64d(&data) else {
+                    return;
+                };
+                if bytes.is_empty() || bytes.len() > 4096 {
+                    return;
+                }
+                let from_nick = self.nick_of(&from);
+                let _ = self.ev.send(NodeEvent::VoiceRoomAudio {
+                    from: from.clone(),
+                    from_nick,
+                    data: bytes,
+                });
             }
             Payload::Presence {
                 nick,

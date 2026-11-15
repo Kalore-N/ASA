@@ -534,6 +534,10 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(error = "录音中不能发起通话") }
             return
         }
+        if (_state.value.voiceRoom.joined) {
+            _state.update { it.copy(error = "语音房中不能发起 1:1 通话，请先退出语音房") }
+            return
+        }
         viewModelScope.launch(Dispatchers.IO) {
             if (!ensureMic()) {
                 _state.update { it.copy(error = "未获得麦克风权限") }
@@ -551,6 +555,10 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
     fun acceptCall() {
         if (_state.value.voiceRecording) {
             _state.update { it.copy(error = "录音中不能接听通话") }
+            return
+        }
+        if (_state.value.voiceRoom.joined) {
+            _state.update { it.copy(error = "语音房中不能接听通话，请先退出语音房") }
             return
         }
         val callId = _state.value.call.callId
@@ -633,6 +641,10 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(error = "通话中不能录制语音消息") }
             return
         }
+        if (_state.value.voiceRoom.joined) {
+            _state.update { it.copy(error = "语音房中不能录制语音消息，请先退出语音房") }
+            return
+        }
         viewModelScope.launch(Dispatchers.IO) {
             if (!ensureMic()) {
                 _state.update { it.copy(error = "未获得麦克风权限") }
@@ -657,7 +669,11 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                         it.copy(
                             voiceRecording = true,
                             voiceTarget = target,
-                            info = "录音中… 再次点击麦克风停止并发送",
+                            info = if (target.isBlank()) {
+                                "录音中… 再次点击麦克风停止，然后选择接收人"
+                            } else {
+                                "录音中… 再次点击麦克风停止并发送"
+                            },
                         )
                     }
                 }
@@ -680,14 +696,162 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(error = "录音为空") }
             return
         }
+        if (target.isBlank()) {
+            _state.update {
+                it.copy(
+                    pendingVoicePath = path,
+                    info = "选择接收人后发送语音消息",
+                )
+            }
+            return
+        }
+        sendVoiceFile(path, target)
+    }
+
+    /** 聊天栏麦克风按钮：录音中再次点击则停止。 */
+    fun toggleVoiceInput() {
+        if (_state.value.voiceRecording) {
+            stopVoiceMessage()
+        } else {
+            startVoiceMessage("")
+        }
+    }
+
+    fun sendPendingVoice(target: String) {
+        val path = _state.value.pendingVoicePath
+        if (path.isNullOrBlank()) return
+        _state.update { it.copy(pendingVoicePath = null) }
+        sendVoiceFile(path, target)
+    }
+
+    fun cancelPendingVoice() {
+        _state.update { it.copy(pendingVoicePath = null) }
+    }
+
+    private fun sendVoiceFile(path: String, target: String) {
         val command = JSONObject()
             .put("cmd", "send_file")
             .put("target", target)
             .put("path", path)
-        if (runCatching { NativeBridge.sendCommand(command.toString()) }.isSuccess) {
-            _state.update { it.copy(info = "语音消息已发送") }
-        } else {
+        val result = runCatching { NativeBridge.sendCommand(command.toString()) }.getOrNull()
+        if (result == null || result.contains("\"ok\":false")) {
             _state.update { it.copy(error = "发送语音消息失败") }
+            return
+        }
+        val mine = ChatMessage(
+            key = nextKey++,
+            id = "",
+            nick = _state.value.nick,
+            text = "语音消息",
+            ts = System.currentTimeMillis(),
+            mine = true,
+            system = false,
+            mentionsMe = false,
+            reply = null,
+            voicePath = path,
+        )
+        _state.update {
+            it.copy(messages = it.messages + mine, info = "语音消息已发送")
+        }
+    }
+
+    /** 播放/停止聊天流里的语音条。 */
+    fun playVoice(path: String) {
+        if (path.isBlank()) return
+        if (_state.value.playingVoice == path) {
+            VoiceCallManager.stopFile()
+            _state.update { it.copy(playingVoice = null) }
+            return
+        }
+        val ok = VoiceCallManager.playFile(path) {
+            _state.update { it.copy(playingVoice = null) }
+        }
+        if (ok) {
+            _state.update { it.copy(playingVoice = path) }
+        } else {
+            _state.update { it.copy(error = "播放语音失败", playingVoice = null) }
+        }
+    }
+
+    // ------------------------------------------------------------ 频道语音房
+
+    fun joinVoiceRoom() {
+        if (_state.value.call.status != CallStatus.Idle) {
+            _state.update { it.copy(error = "通话中不能加入语音房，请先挂断") }
+            return
+        }
+        if (_state.value.voiceRecording) {
+            _state.update { it.copy(error = "录音中不能加入语音房") }
+            return
+        }
+        if (_state.value.voiceRoom.joined) return
+        viewModelScope.launch(Dispatchers.IO) {
+            if (!ensureMic()) {
+                _state.update { it.copy(error = "未获得麦克风权限") }
+                return@launch
+            }
+            val result = runCatching {
+                NativeBridge.sendCommand(JSONObject().put("cmd", "voice_room_join").toString())
+            }.getOrNull()
+            if (result == null || result.contains("\"ok\":false")) {
+                _state.update { it.copy(error = "加入语音房失败") }
+            } else {
+                _state.update { it.copy(info = "正在加入语音房…") }
+            }
+        }
+    }
+
+    fun leaveVoiceRoom() {
+        val app = getApplication<Application>()
+        VoiceCallManager.stop(app)
+        _state.update {
+            it.copy(
+                voiceRoom = it.voiceRoom.copy(joined = false, members = emptyList()),
+                info = "已退出语音房",
+            )
+        }
+        runCatching {
+            NativeBridge.sendCommand(JSONObject().put("cmd", "voice_room_leave").toString())
+        }
+    }
+
+    fun toggleVoiceRoomMute() {
+        _state.update {
+            val muted = !it.voiceRoom.muted
+            it.copy(voiceRoom = it.voiceRoom.copy(muted = muted))
+        }
+    }
+
+    fun toggleVoiceRoomSpeaker() {
+        val app = getApplication<Application>()
+        _state.update {
+            val speaker = !it.voiceRoom.speaker
+            VoiceCallManager.setSpeaker(app, speaker)
+            it.copy(voiceRoom = it.voiceRoom.copy(speaker = speaker))
+        }
+    }
+
+    private fun sendVoiceRoomFrame(frame: ByteArray) {
+        val data = android.util.Base64.encodeToString(frame, android.util.Base64.NO_WRAP)
+        val command = JSONObject().put("cmd", "voice_room_frame").put("data", data).toString()
+        runCatching { NativeBridge.sendCommand(command) }
+    }
+
+    private fun startVoiceRoomAudio() {
+        val app = getApplication<Application>()
+        runCatching {
+            VoiceCallManager.start(app) { frame ->
+                val room = _state.value.voiceRoom
+                if (room.joined && !room.muted) sendVoiceRoomFrame(frame)
+            }
+            VoiceCallManager.setSpeaker(app, _state.value.voiceRoom.speaker)
+        }.onFailure { error ->
+            _state.update { it.copy(error = "语音房麦克风启动失败: ${error.message}") }
+            runCatching {
+                NativeBridge.sendCommand(
+                    JSONObject().put("cmd", "voice_room_leave").toString(),
+                )
+            }
         }
     }
 
@@ -795,6 +959,8 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
 
     fun stop() {
         val app = getApplication<Application>()
+        VoiceCallManager.stop(app)
+        VoiceCallManager.stopFile()
         EasyTierController.stop(app)
         app.stopService(Intent(app, AsaService::class.java))
         runCatching { NativeBridge.stop() }
@@ -870,6 +1036,9 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
         var mentioned = current.mentioned
         var screen = current.screen
         var lastVoicePath = current.lastVoicePath
+        var voiceRoom = current.voiceRoom
+        var playingVoice = current.playingVoice
+        var pendingVoicePath = current.pendingVoicePath
 
         for (index in 0 until events.length()) {
             val event = events.getJSONObject(index)
@@ -1013,8 +1182,43 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                         VoiceCallManager.playFrame(data)
                     }
                 }
+                "voice_room_state" -> {
+                    val joined = event.optBoolean("joined")
+                    val list = event.optJSONArray("members")
+                    val parsed = mutableListOf<VoiceRoomMember>()
+                    if (list != null) {
+                        for (i in 0 until list.length()) {
+                            val item = list.getJSONObject(i)
+                            parsed += VoiceRoomMember(
+                                pubkey = item.optString("pubkey"),
+                                nick = item.optString("nick"),
+                            )
+                        }
+                    }
+                    if (joined && !voiceRoom.joined) {
+                        startVoiceRoomAudio()
+                    } else if (!joined && voiceRoom.joined) {
+                        VoiceCallManager.stop(app)
+                    }
+                    voiceRoom = voiceRoom.copy(
+                        joined = joined,
+                        members = if (joined) parsed else emptyList(),
+                    )
+                }
+                "voice_room_audio" -> {
+                    if (voiceRoom.joined) {
+                        runCatching {
+                            val data = android.util.Base64.decode(
+                                event.optString("data"),
+                                android.util.Base64.NO_WRAP,
+                            )
+                            VoiceCallManager.playFrame(data)
+                        }
+                    }
+                }
                 "file_complete" -> {
                     val xfer = event.optString("xfer")
+                    val fromNick = offers.firstOrNull { it.xfer == xfer }?.fromNick ?: "对方"
                     transfers.remove(xfer)
                     offers.removeAll { it.xfer == xfer }
                     val name = event.optString("name")
@@ -1025,7 +1229,19 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                             name.endsWith(".wav", true)
                         ) {
                             lastVoicePath = path
-                            info = "收到语音消息；更多 → 播放最近语音"
+                            info = "收到语音消息，点击语音条播放"
+                            messages += ChatMessage(
+                                key = nextKey++,
+                                id = "",
+                                nick = fromNick,
+                                text = "语音消息",
+                                ts = System.currentTimeMillis(),
+                                mine = false,
+                                system = false,
+                                mentionsMe = false,
+                                reply = null,
+                                voicePath = path,
+                            )
                         }
                     } else {
                         error = "文件传输失败: $name · ${event.optString("msg")}"
@@ -1061,6 +1277,9 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
             voiceRecording = _state.value.voiceRecording,
             voiceTarget = _state.value.voiceTarget,
             lastVoicePath = lastVoicePath,
+            voiceRoom = voiceRoom,
+            playingVoice = playingVoice,
+            pendingVoicePath = pendingVoicePath,
         )
     }
 }

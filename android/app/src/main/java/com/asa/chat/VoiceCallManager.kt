@@ -245,7 +245,7 @@ object VoiceCallManager {
         return header
     }
 
-    fun playFile(path: String): Boolean {
+    fun playFile(path: String, onDone: (() -> Unit)? = null): Boolean {
         stopFile()
         return runCatching {
             player = MediaPlayer().apply {
@@ -253,6 +253,7 @@ object VoiceCallManager {
                 setOnCompletionListener {
                     it.release()
                     if (player === it) player = null
+                    onDone?.invoke()
                 }
                 prepare()
                 start()
@@ -260,6 +261,7 @@ object VoiceCallManager {
             true
         }.getOrElse {
             Log.w(TAG, "play file failed", it)
+            onDone?.invoke()
             false
         }
     }
