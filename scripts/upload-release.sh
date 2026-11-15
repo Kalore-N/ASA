@@ -8,7 +8,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TAG="${TAG:-v1.7.0}"
+TAG="${TAG:-v1.7.0-hotfix}"
+VERSION="${VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -1)}"
 REPO="${REPO:-Kalore-N/ASA}"
 TOKEN="${GITHUB_TOKEN:?请设置 GITHUB_TOKEN（只需 Contents: Read and write）}"
 API="https://api.github.com/repos/$REPO"
@@ -24,14 +25,14 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 ASSETS=(
-  "$ROOT/dist/asa-${TAG#v}-linux-x86_64.tar.gz"
-  "$ROOT/dist/asa-${TAG#v}-windows-x86_64.zip"
-  "$ROOT/dist/asa-${TAG#v}-android-arm64.apk"
-  "$ROOT/dist/asa-${TAG#v}-android-x86_64.apk"
-  "$ROOT/dist/packages/asa-${TAG#v}-1-x86_64.pkg.tar.zst"
-  "$ROOT/dist/packages/asa_${TAG#v}_amd64.deb"
-  "$ROOT/dist/packages/asa-${TAG#v}-1.x86_64.rpm"
-  "$ROOT/dist/SHA256SUMS-${TAG#v}"
+  "$ROOT/dist/asa-${VERSION}-linux-x86_64.tar.gz"
+  "$ROOT/dist/asa-${VERSION}-windows-x86_64.zip"
+  "$ROOT/dist/asa-${VERSION}-android-arm64.apk"
+  "$ROOT/dist/asa-${VERSION}-android-x86_64.apk"
+  "$ROOT/dist/packages/asa-${VERSION}-1-x86_64.pkg.tar.zst"
+  "$ROOT/dist/packages/asa_${VERSION}_amd64.deb"
+  "$ROOT/dist/packages/asa-${VERSION}-1.x86_64.rpm"
+  "$ROOT/dist/SHA256SUMS-${VERSION}"
 )
 for asset in "${ASSETS[@]}"; do
   [ -f "$asset" ] || { echo "缺少资产：$asset" >&2; exit 1; }

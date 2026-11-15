@@ -2,6 +2,7 @@ package com.asa.chat.ui
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -20,18 +21,24 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -45,6 +52,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.text.KeyboardOptions
+import com.asa.chat.LanChannel
 import com.asa.chat.R
 import com.asa.chat.UiState
 
@@ -64,6 +72,8 @@ fun ConnectScreen(
         joinPassword: String,
     ) -> Unit,
     onOpenGroups: () -> Unit,
+    onRefreshLan: () -> Unit,
+    onJoinLan: (LanChannel, String) -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     var mode by rememberSaveable { mutableStateOf(if (initialMode == "join") "join" else "create") }
@@ -72,6 +82,12 @@ fun ConnectScreen(
     var invite by rememberSaveable { mutableStateOf("") }
     var connect by rememberSaveable { mutableStateOf("") }
     var joinPassword by rememberSaveable { mutableStateOf("") }
+    var lanTarget by remember { mutableStateOf<LanChannel?>(null) }
+    var lanPassword by remember { mutableStateOf("") }
+
+    LaunchedEffect(mode) {
+        if (mode == "join") onRefreshLan()
+    }
 
     Column(
         modifier = Modifier
@@ -155,6 +171,76 @@ fun ConnectScreen(
                 maxLines = 5,
                 shape = FieldShape,
             )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text("局域网频道", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (state.lanLoading) {
+                        Text(
+                            "搜索中…",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    TextButton(onClick = onRefreshLan, enabled = !state.lanLoading) {
+                        Text("刷新")
+                    }
+                }
+            }
+            if (state.lanChannels.isEmpty()) {
+                Text(
+                    if (state.lanLoading) "正在搜索局域网频道…" else "未发现局域网频道；确认在同一 Wi-Fi 且宿主已开启频道。",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                state.lanChannels.take(6).forEach { channel ->
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                if (channel.open) {
+                                    onJoinLan(channel, "")
+                                } else {
+                                    lanTarget = channel
+                                    lanPassword = ""
+                                }
+                            },
+                        shape = FieldShape,
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    channel.name,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    fontSize = 14.sp,
+                                )
+                                Text(
+                                    buildString {
+                                        append(channel.host.ifBlank { "未知宿主" })
+                                        append(" · ")
+                                        append(channel.room.take(8))
+                                        if (!channel.open) append(" · 需要密码")
+                                    },
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Text(if (channel.open) "加入" else "解锁", fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+            HorizontalDivider()
         }
 
         if (mode == "create") {
@@ -243,6 +329,33 @@ fun ConnectScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 12.sp,
             textAlign = TextAlign.Start,
+        )
+    }
+
+    lanTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { lanTarget = null },
+            shape = FieldShape,
+            title = { Text("加入「${target.name}」") },
+            text = {
+                OutlinedTextField(
+                    value = lanPassword,
+                    onValueChange = { lanPassword = it },
+                    singleLine = true,
+                    shape = FieldShape,
+                    label = { Text("频道加入密码") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    lanTarget = null
+                    onJoinLan(target, lanPassword)
+                }) { Text("加入") }
+            },
+            dismissButton = {
+                TextButton(onClick = { lanTarget = null }) { Text("取消") }
+            },
         )
     }
 }

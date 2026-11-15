@@ -241,9 +241,33 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 return@launch
             }
+            if (!enabled && EasyTierController.activeRoom == roomId) {
+                EasyTierController.stop(app)
+                _state.update {
+                    it.copy(
+                        easytierEnabled = false,
+                        easytierIp = null,
+                        easytierError = null,
+                        info = "EasyTier 已关闭",
+                    )
+                }
+            }
             reloadGroups(app)
+            // 进程重启后 UiState.roomId 可能为空，用 native 状态补一次，
+            // 否则在频道列表关闭当前频道的 ET 只会改配置，VPN 不会停。
+            val runningRoom = if (runCatching { NativeBridge.isRunning() }.getOrDefault(false)) {
+                runCatching {
+                    JSONObject(NativeBridge.status()).optString("room_id")
+                }.getOrDefault("")
+            } else {
+                ""
+            }
+            val currentRoom = _state.value.roomId.ifBlank { runningRoom }
+            if (!enabled && currentRoom == roomId) {
+                EasyTierController.stop(app)
+            }
             // 当前频道需要重启才能应用虚拟 IP / 关闭 ET。
-            if (_state.value.roomId == roomId) {
+            if (currentRoom == roomId) {
                 val config = lastConfig ?: ConfigStore.load(app)
                 start(
                     mode = "chat",
@@ -336,6 +360,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                             etSecret,
                             "$etIpv4/16",
                             etNodes,
+                            obj.optString("room_id"),
                         )
                     ) {
                         etError = EasyTierController.lastError ?: "EasyTier 启动失败"
@@ -770,6 +795,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
 
     fun stop() {
         val app = getApplication<Application>()
+        EasyTierController.stop(app)
         app.stopService(Intent(app, AsaService::class.java))
         runCatching { NativeBridge.stop() }
         val groups = _state.value.groups
@@ -851,6 +877,9 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                 "chat" -> {
                     val text = event.optString("text")
                     val msgId = event.optString("id")
+                    if (msgId.isNotBlank() && messages.any { it.id == msgId }) {
+                        continue
+                    }
                     val fromNick = event.optString("nick")
                     val mine = event.optBoolean("mine")
                     val mentions = event.optJSONArray("mentions")?.toStringList().orEmpty()

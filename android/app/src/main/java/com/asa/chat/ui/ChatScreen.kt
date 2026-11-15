@@ -7,7 +7,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -82,6 +83,8 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -973,7 +976,32 @@ private fun MessageRow(message: ChatMessage, onReply: () -> Unit) {
                         Modifier
                     },
                 )
-                .combinedClickable(onClick = {}, onLongClick = onReply),
+                .pointerInput(message.key) {
+                    val threshold = 72.dp.toPx()
+                    awaitEachGesture {
+                        val down = awaitFirstDown(
+                            requireUnconsumed = false,
+                            pass = PointerEventPass.Initial,
+                        )
+                        var total = 0f
+                        var dragging = false
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) {
+                                if (dragging && total <= -threshold) onReply()
+                                break
+                            }
+                            total += change.position.x - change.previousPosition.x
+                            if (!dragging && kotlin.math.abs(total) > viewConfiguration.touchSlop) {
+                                dragging = true
+                            }
+                            if (dragging) {
+                                change.consume()
+                            }
+                        }
+                    }
+                },
         ) {
             Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
                 message.reply?.let { reply ->
@@ -1001,7 +1029,9 @@ private fun MessageRow(message: ChatMessage, onReply: () -> Unit) {
                     }
                     Spacer(Modifier.height(5.dp))
                 }
-                Text(message.text, color = contentColor, fontSize = 15.sp)
+                SelectionContainer {
+                    Text(message.text, color = contentColor, fontSize = 15.sp)
+                }
                 Text(
                     timeText(message.ts),
                     modifier = Modifier

@@ -650,6 +650,24 @@ mod join_server_tests {
     use crate::identity::Identity;
 
     #[test]
+    fn joined_channel_merges_easytier_nodes() {
+        let root = std::env::temp_dir().join(format!("asa-join-et-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dirs = crate::paths::RuntimeDirs::ensure(&root).unwrap();
+        let inviter = Identity::generate();
+        let room = RoomConfig::create(&inviter);
+        crate::rooms::save(&dirs, &room).unwrap();
+        let mut with_nodes = room.clone();
+        with_nodes.et_nodes = vec!["tcp://225284.xyz:11010".to_string()];
+        let invite = with_nodes.invite(Some("127.0.0.1:7777".parse().unwrap()));
+        let saved = save_joined_channel(&dirs, &invite, None).unwrap();
+        assert_eq!(saved.et_nodes, vec!["tcp://225284.xyz:11010".to_string()]);
+        let profile = GroupProfile::load(&dirs, &room.id).unwrap();
+        assert_eq!(profile.easytier_enabled, Some(true));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn password_and_open_join_protocol() {
         let identity = Identity::generate();
         let room = RoomConfig::create(&identity);

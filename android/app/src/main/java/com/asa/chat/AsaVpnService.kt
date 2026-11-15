@@ -26,6 +26,7 @@ class AsaVpnService : VpnService() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
+        instance = this
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -87,6 +88,7 @@ class AsaVpnService : VpnService() {
 
     override fun onDestroy() {
         cleanup()
+        if (instance === this) instance = null
         super.onDestroy()
     }
 
@@ -94,8 +96,10 @@ class AsaVpnService : VpnService() {
         runCatching { vpnInterface?.close() }
         vpnInterface = null
         runCatching { EasyTierJNI.stopAllInstances() }
-        EasyTierController.stop(applicationContext)
+        EasyTierController.markStopped()
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+        status = "已停止"
+        Log.i(TAG, "VPN 已清理")
     }
 
     private fun startForegroundNotification() {
@@ -153,11 +157,34 @@ class AsaVpnService : VpnService() {
 
     companion object {
         private const val TAG = "AsaEasyTier"
+
+        @Volatile
+        private var instance: AsaVpnService? = null
+
+        /**
+         * VpnService 会被系统 bind，单靠 stopService() 不会触发 onDestroy。
+         * 必须先关闭 TUN fd，再 stopSelf，否则系统 VPN 图标会一直残留。
+         */
+        fun stopNow(context: android.content.Context) {
+            val service = instance
+            if (service != null) {
+                runCatching { service.cleanup() }
+                runCatching { service.stopSelf() }
+            }
+            runCatching {
+                context.stopService(Intent(context, AsaVpnService::class.java))
+            }
+            Log.i(TAG, "VPN stop requested")
+        }
         private const val CHANNEL_ID = "asa_easytier_vpn"
         private const val NOTIFICATION_ID = 4570
 
         @Volatile
         var status: String = "未启动"
             private set
+
+        fun updateStatus(text: String) {
+            status = text
+        }
     }
 }

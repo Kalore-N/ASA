@@ -107,6 +107,10 @@ class MainActivity : ComponentActivity() {
                                 )
                             },
                             onOpenGroups = { vm.showGroups() },
+                            onRefreshLan = { vm.discoverLan() },
+                            onJoinLan = { channel, password ->
+                                vm.joinLan(channel, password)
+                            },
                             onOpenSettings = { showSettings = true },
                         )
                         Screen.Groups -> GroupListScreen(
@@ -123,10 +127,6 @@ class MainActivity : ComponentActivity() {
                             onRename = { roomId, name -> vm.renameGroup(roomId, name) },
                             onToggleEasytier = { roomId, enabled ->
                                 vm.toggleEasytier(roomId, enabled)
-                            },
-                            onRefreshLan = { vm.discoverLan() },
-                            onJoinLan = { channel, password ->
-                                vm.joinLan(channel, password)
                             },
                             onOpenSettings = { showSettings = true },
                         )

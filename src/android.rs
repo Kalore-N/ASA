@@ -108,7 +108,7 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
     let _ = Settings { port: Some(port) }.save(&dirs.settings_path());
 
     let mut invite_addresses: Vec<String> = Vec::new();
-    let room = match cfg.mode.as_str() {
+    let mut room = match cfg.mode.as_str() {
         "create" => {
             // Android 的「创建群聊」每次都生成新群，不再复用旧 room.json。
             let room = RoomConfig::create(&identity);
@@ -132,6 +132,11 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
                     for relay in &parsed.relays {
                         if !existing.relays.iter().any(|r| r == relay) {
                             existing.relays.push(relay.clone());
+                        }
+                    }
+                    for node in &parsed.et_nodes {
+                        if !existing.et_nodes.iter().any(|n| n == node) {
+                            existing.et_nodes.push(node.clone());
                         }
                     }
                     crate::rooms::save(&dirs, &existing)?;
@@ -241,11 +246,16 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
             }
         }
     }
-    let invite_et_nodes = if cfg.advertise.is_some() {
-        effective_et_nodes.clone()
-    } else {
-        Vec::new()
-    };
+    // 邀请码只携带当前频道实际使用的节点；开启 ET 且频道还没有节点时，
+    // 把全局节点复制到频道配置，后续邀请码和重启都会沿用。
+    if profile.easytier_enabled.unwrap_or(false)
+        && room.et_nodes.is_empty()
+        && !effective_et_nodes.is_empty()
+    {
+        room.et_nodes = effective_et_nodes.clone();
+        let _ = crate::rooms::save(&dirs, &room);
+    }
+    let invite_et_nodes = room.et_nodes.clone();
     let mut extra_entries = Vec::new();
     if advertise.map(|addr| addr.ip() != lan_ip).unwrap_or(false) {
         extra_entries.push(format!("{lan_ip}:{port}"));
@@ -753,8 +763,16 @@ pub extern "system" fn Java_com_asa_chat_NativeBridge_setEasytierEnabled<'local>
             if !config.easytier.nodes.is_empty() {
                 let mut room = crate::rooms::load(&dirs, &room_id)?
                     .ok_or_else(|| anyhow!("找不到本地频道: {room_id}"))?;
-                if room.et_nodes.is_empty() {
-                    room.et_nodes = config.easytier.nodes.clone();
+                let mut changed = false;
+                for node in &config.easytier.nodes {
+                    if let Ok(node) = crate::easytier::normalize_node(node) {
+                        if !room.et_nodes.contains(&node) {
+                            room.et_nodes.push(node);
+                            changed = true;
+                        }
+                    }
+                }
+                if changed {
                     crate::rooms::save(&dirs, &room)?;
                 }
             }

@@ -317,6 +317,11 @@ fn real_main() -> Result<()> {
                             existing.relays.push(relay.clone());
                         }
                     }
+                    for node in &parsed.et_nodes {
+                        if !existing.et_nodes.iter().any(|n| n == node) {
+                            existing.et_nodes.push(node.clone());
+                        }
+                    }
                     asa::rooms::save(&dirs, &existing)?;
                     existing
                 }
@@ -325,6 +330,15 @@ fn real_main() -> Result<()> {
                     parsed
                 }
             };
+            // 邀请码携带的 EasyTier 节点写入频道配置；首次加入时默认开启。
+            if !room.et_nodes.is_empty() {
+                let path = asa::config::group_path(&dirs, &room.id);
+                let mut profile = GroupProfile::load_at(&path).unwrap_or_default();
+                if profile.easytier_enabled.is_none() {
+                    profile.easytier_enabled = Some(true);
+                    profile.save_at(&path)?;
+                }
+            }
             let (identity, saved_nick) = Identity::load_or_create(&dirs.identity_path())?;
             let nick = opts
                 .name
@@ -457,7 +471,8 @@ fn run_chat(
         let mut selected_nodes: Vec<String> = Vec::new();
         let mut extra_entries: Vec<String> = Vec::new();
 
-        let auto_easytier = config.easytier.auto_enable && !config.easytier.nodes.is_empty();
+        let auto_easytier = !room.et_nodes.is_empty()
+            || (config.easytier.auto_enable && !config.easytier.nodes.is_empty());
         if profile.easytier_enabled.unwrap_or(auto_easytier) {
             let mut nodes = room.et_nodes.clone();
             if nodes.is_empty() {
@@ -505,10 +520,14 @@ fn run_chat(
             bind,
             advertise,
             extra_entries,
-            invite_et_nodes: if et_status.running {
-                selected_nodes.clone()
-            } else {
-                Vec::new()
+            invite_et_nodes: {
+                let mut nodes = room.et_nodes.clone();
+                for node in &selected_nodes {
+                    if !nodes.contains(node) {
+                        nodes.push(node.clone());
+                    }
+                }
+                nodes
             },
             dirs: dirs.clone(),
             identity_path: dirs.identity_path(),

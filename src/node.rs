@@ -524,7 +524,12 @@ impl Node {
             })
         };
         let mut initial_recent = VecDeque::new();
+        let mut initial_seen = HashSet::new();
+        let mut initial_seen_order = VecDeque::new();
         for chat in &local_chats {
+            if !chat.id.is_empty() && initial_seen.insert(chat.id.clone()) {
+                initial_seen_order.push_back(chat.id.clone());
+            }
             let from = chat.pubkey.clone().unwrap_or_else(|| chat.from_id.clone());
             let mine = from == cfg.pubkey;
             let _ = ev_tx.send(NodeEvent::Chat {
@@ -563,8 +568,8 @@ impl Node {
             dirs: cfg.dirs.clone(),
             peers: HashMap::new(),
             known: HashMap::new(),
-            seen: HashSet::new(),
-            seen_order: VecDeque::new(),
+            seen: initial_seen,
+            seen_order: initial_seen_order,
             host: None,
             history,
             ev: ev_tx.clone(),

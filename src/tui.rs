@@ -53,6 +53,7 @@ const HELP: &str = "\
                       录制/发送/播放语音消息
 /reply [编号]         回复指定消息；/reply 列出可回复的编号
 /copy                 把最近的邀请码或保存路径复制到系统剪贴板（OSC 52）
+/mouse [on|off]       切换鼠标捕获；关闭后可用鼠标拖选文本（也可按住 Shift 拖选）
 Ctrl+Y                把最近内容放入输入行（剪贴板不可用时的兜底）
 /clear                清空当前屏幕（不影响本地日志）
 /quit                 退出
@@ -65,7 +66,7 @@ const HINTS: &str =
     "Enter 发送 · Tab 补全 · Ctrl+R 回复 · PgUp/PgDn 翻页 · /help 命令 · Ctrl+C 退出";
 
 /// 可补全的聊天指令。
-const COMMANDS: [&str; 20] = [
+const COMMANDS: [&str; 21] = [
     "/help",
     "/name",
     "/rename",
@@ -83,6 +84,7 @@ const COMMANDS: [&str; 20] = [
     "/call",
     "/voice",
     "/copy",
+    "/mouse",
     "/clear",
     "/reply",
     "/quit",
@@ -216,6 +218,8 @@ pub struct App {
     incoming_call: Option<IncomingCall>,
     voice_message: Option<VoiceMessage>,
     ptt_active: bool,
+    /// 是否捕获鼠标；关闭后终端可拖选文本、使用系统右键菜单。
+    mouse_capture: bool,
 }
 
 struct ActiveCall {
@@ -285,6 +289,7 @@ impl App {
             incoming_call: None,
             voice_message: None,
             ptt_active: false,
+            mouse_capture: true,
         };
         app.push_system("欢迎使用 ASA。直接输入文字回车发送；/help 查看命令；/invite 获取邀请码。");
         app
@@ -1669,6 +1674,25 @@ impl App {
                 });
             }
             "copy" => self.copy_to_clipboard(),
+            "mouse" => {
+                self.mouse_capture = match rest.trim() {
+                    "on" => true,
+                    "off" => false,
+                    "" => !self.mouse_capture,
+                    _ => {
+                        self.set_status("用法: /mouse [on|off]", true);
+                        return;
+                    }
+                };
+                self.set_status(
+                    if self.mouse_capture {
+                        "鼠标捕获已开启：滚轮可滚动；Shift+拖选仍可选择文本"
+                    } else {
+                        "鼠标捕获已关闭：可直接拖选文本；/mouse on 恢复滚轮"
+                    },
+                    false,
+                );
+            }
             "sync" => {
                 let _ = self.cmd.send(Cmd::Sync);
             }
@@ -2429,6 +2453,7 @@ pub fn run(handle: NodeHandle, cfg: UiConfig) -> Result<TuiAction> {
     install_panic_hook();
     let mut terminal = init_terminal()?;
     let mut app = App::new(&handle, cfg);
+    let mut mouse_capture = true;
     let events = handle.events;
     while !app.should_quit {
         while let Ok(event) = events.try_recv() {
@@ -2455,6 +2480,14 @@ pub fn run(handle: NodeHandle, cfg: UiConfig) -> Result<TuiAction> {
             let _ = terminal.hide_cursor();
         } else {
             let _ = terminal.show_cursor();
+        }
+        if app.mouse_capture != mouse_capture {
+            mouse_capture = app.mouse_capture;
+            if mouse_capture {
+                crossterm::execute!(terminal.backend_mut(), EnableMouseCapture)?;
+            } else {
+                crossterm::execute!(terminal.backend_mut(), DisableMouseCapture)?;
+            }
         }
         if app.action.is_some() {
             break;
@@ -2799,6 +2832,7 @@ mod tests {
             incoming_call: None,
             voice_message: None,
             ptt_active: false,
+            mouse_capture: true,
             listen: "127.0.0.1:7777".parse().unwrap(),
             invite: String::new(),
             max_file: 0,

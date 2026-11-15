@@ -31,17 +31,30 @@ object EasyTierController {
     var lastError: String? = null
         private set
 
+    /** 当前 EasyTier 对应的频道；用于关闭频道时精确停止。 */
+    @Volatile
+    var activeRoom: String? = null
+        private set
+
+    /** 最近一次 ET 运行时信息，便于日志和诊断面板。 */
+    @Volatile
+    var lastInfo: String? = null
+        private set
+
     fun start(
         context: Context,
         network: String,
         secret: String,
         ipv4: String,
         nodes: List<String>,
+        roomId: String? = null,
     ): Boolean {
         if (network.isBlank() || secret.isBlank() || ipv4.isBlank() || nodes.isEmpty()) {
             lastError = "EasyTier 配置不完整"
             return false
         }
+        // 切频道时先彻底停掉旧实例，避免同名实例仍占用 TUN。
+        if (running) stop(context)
         lastError = null
         val config = buildConfig(network, secret, ipv4, nodes)
         Log.i(TAG, "EasyTier config:\n$config")
@@ -57,6 +70,8 @@ object EasyTierController {
                 return false
             }
             running = true
+            activeRoom = roomId
+            lastInfo = null
             val intent = Intent(context, AsaVpnService::class.java)
                 .putExtra("ipv4", ipv4.substringBefore('/'))
                 .putExtra("prefix", ipv4.substringAfter('/', "16").toIntOrNull() ?: 16)
@@ -66,6 +81,25 @@ object EasyTierController {
             } else {
                 context.startService(intent)
             }
+            Thread {
+                for (delay in longArrayOf(2_500, 8_000)) {
+                    try {
+                        Thread.sleep(delay)
+                    } catch (_: InterruptedException) {
+                        return@Thread
+                    }
+                    if (!running) return@Thread
+                    val info = runCatching {
+                        EasyTierJNI.collectNetworkInfos()
+                    }.getOrNull()
+                    lastInfo = info
+                    Log.i(TAG, "ET status t+${delay}ms $info")
+                }
+            }.apply {
+                name = "asa-et-status"
+                isDaemon = true
+                start()
+            }
             true
         } catch (t: Throwable) {
             lastError = t.message ?: "EasyTier 启动异常"
@@ -74,10 +108,22 @@ object EasyTierController {
         }
     }
 
-    fun stop(context: Context) {
+    /** VPN 被系统撤销或服务销毁时同步运行时状态。 */
+    fun markStopped() {
         running = false
+        activeRoom = null
+        lastInfo = null
+    }
+
+    fun stop(context: Context) {
+        val wasRunning = running
+        running = false
+        activeRoom = null
+        lastInfo = null
         runCatching { EasyTierJNI.stopAllInstances() }
-        runCatching { context.stopService(Intent(context, AsaVpnService::class.java)) }
+        AsaVpnService.stopNow(context)
+        AsaVpnService.updateStatus("已停止")
+        if (wasRunning) Log.i(TAG, "EasyTier stopped")
     }
 
     /** 通过 ActivityResult 申请系统 VPN 权限，并等待用户确认。 */
@@ -91,7 +137,7 @@ object EasyTierController {
     }
 
     fun status(): String? {
-        return runCatching { EasyTierJNI.collectNetworkInfos(10) }.getOrNull()
+        return runCatching { EasyTierJNI.collectNetworkInfos() }.getOrNull()
     }
 
     private fun buildConfig(
