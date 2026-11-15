@@ -849,6 +849,34 @@ pub extern "system" fn Java_com_asa_chat_NativeBridge_renameGroup<'local>(
 }
 
 #[no_mangle]
+pub extern "system" fn Java_com_asa_chat_NativeBridge_deleteGroup<'local>(
+    mut env: jni::JNIEnv<'local>,
+    _this: jni::objects::JObject<'local>,
+    data_dir: jni::objects::JString<'local>,
+    room_id: jni::objects::JString<'local>,
+    purge_logs: jni::sys::jboolean,
+) -> jni::sys::jstring {
+    let result = (|| -> Result<serde_json::Value> {
+        let root = PathBuf::from(read_string(&mut env, &data_dir)?);
+        let room_id = read_string(&mut env, &room_id)?;
+        let room_id = room_id.trim();
+        if room_id.is_empty() {
+            return Err(anyhow!("频道 ID 不能为空"));
+        }
+        let dirs = RuntimeDirs::ensure(&root)?;
+        let removed_logs = crate::rooms::remove_with_logs(&dirs, room_id, purge_logs != 0)?;
+        Ok(json!({ "ok": true, "removed_logs": removed_logs }))
+    })();
+    to_jstring(
+        &mut env,
+        match result {
+            Ok(value) => value.to_string(),
+            Err(err) => fail(err),
+        },
+    )
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_asa_chat_NativeBridge_isRunning<'local>(
     _env: jni::JNIEnv<'local>,
     _this: jni::objects::JObject<'local>,

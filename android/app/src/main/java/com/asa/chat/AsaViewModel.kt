@@ -996,6 +996,46 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
         reloadGroups(app)
     }
 
+    /** 删除本机保存的频道；[purgeLogs] 为 true 时同时清理该频道的聊天记录。 */
+    fun deleteGroup(roomId: String, purgeLogs: Boolean) {
+        if (roomId.isBlank()) return
+        if (_state.value.connecting) {
+            _state.update { it.copy(error = "正在连接，请稍后再删除") }
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val app = getApplication<Application>()
+            val name = _state.value.groups.firstOrNull { it.id == roomId }?.name.orEmpty()
+            val running = _state.value.roomId == roomId &&
+                runCatching { NativeBridge.isRunning() }.getOrDefault(false)
+            if (running) {
+                _state.update { it.copy(info = "正在退出频道…") }
+                stop()
+            }
+            val result = runCatching {
+                JSONObject(NativeBridge.deleteGroup(dataDir(app), roomId, purgeLogs))
+            }.getOrNull()
+            if (result?.optBoolean("ok") == true) {
+                if (_state.value.roomId == roomId) {
+                    _state.update { it.copy(roomId = "", roomName = "") }
+                }
+                reloadGroups(app)
+                val cleaned = result.optInt("removed_logs", 0)
+                val suffix = if (purgeLogs) "，已清理 $cleaned 个聊天记录文件" else ""
+                _state.update {
+                    it.copy(
+                        groups = it.groups.filterNot { group -> group.id == roomId },
+                        info = "频道「${name.ifBlank { roomId.take(8) }}」已删除$suffix",
+                    )
+                }
+            } else {
+                val message = result?.optString("error")?.takeIf { it.isNotBlank() }
+                    ?: "删除频道失败"
+                _state.update { it.copy(error = message) }
+            }
+        }
+    }
+
     fun clearError() = _state.update { it.copy(error = null) }
     fun clearInfo() = _state.update { it.copy(info = null) }
     fun clearMentioned() = _state.update { it.copy(mentioned = null) }

@@ -2,7 +2,7 @@
 
 这是我第一次尝试vibe coding的产物，随便写了点小东西玩玩
 
-当前版本：**1.7.1**
+当前版本：**1.7.2**
 
 ASA 是一个用 Rust 编写的**完全去中心化**终端频道工具：没有中心服务器，每个参与者都是对等节点。支持局域网自动发现、跨网手动连接、端到端加密、本地聊天记录（JSONL）以及文件传输。
 
@@ -64,7 +64,8 @@ asa invite     # 打印当前群的邀请码
 - `c` 创建新频道
 - `j` 粘贴邀请码加入频道
 - `r` 修改本机显示的频道名称
-- `d` 删除本机保存的频道（不会删除聊天日志和下载文件）
+- `d` 删除本机保存的频道：同时清理本机频道设置（名称/EasyTier/加入密码），
+  但不删除聊天日志和下载文件
 - `q`/`Esc` 退出
 
 进入频道后可用 `/channels` 再次打开选择框，或用 `/switch <名称或 ID>` 直接切换。
@@ -513,25 +514,25 @@ GitHub Releases 提供各平台的可运行产物；源码仓库不包含构建�
 
 | 平台 | 文件 | 说明 |
 | --- | --- | --- |
-| Linux x86-64 | `asa-1.7.1-linux-x86_64.tar.gz` | 含 `asa`、`easytier-core`、`easytier-cli` |
-| Windows x86-64 | `asa-1.7.1-windows-x86_64.zip` | 含 `asa.exe`、EasyTier、`wintun.dll` |
-| Android arm64 | `asa-1.7.1-android-arm64.apk` | 真机推荐；含 arm64 EasyTier 原生库 |
-| Android x86_64 | `asa-1.7.1-android-x86_64.apk` | 模拟器 / x86_64 平板 |
-| Arch Linux x86-64 | `asa-1.7.1-1-x86_64.pkg.tar.zst` | 含二进制、EasyTier、man、桌面入口与图标 |
-| Debian / Ubuntu amd64 | `asa_1.7.1_amd64.deb` | 含二进制、EasyTier、man、桌面入口与图标 |
-| Fedora / RHEL x86-64 | `asa-1.7.1-1.x86_64.rpm` | 含二进制、EasyTier、man、桌面入口与图标 |
+| Linux x86-64 | `asa-1.7.2-linux-x86_64.tar.gz` | 含 `asa`、`easytier-core`、`easytier-cli` |
+| Windows x86-64 | `asa-1.7.2-windows-x86_64.zip` | 含 `asa.exe`、EasyTier、`wintun.dll` |
+| Android arm64 | `asa-1.7.2-android-arm64.apk` | 真机推荐；含 arm64 EasyTier 原生库 |
+| Android x86_64 | `asa-1.7.2-android-x86_64.apk` | 模拟器 / x86_64 平板 |
+| Arch Linux x86-64 | `asa-1.7.2-1-x86_64.pkg.tar.zst` | 含二进制、EasyTier、man、桌面入口与图标 |
+| Debian / Ubuntu amd64 | `asa_1.7.2_amd64.deb` | 含二进制、EasyTier、man、桌面入口与图标 |
+| Fedora / RHEL x86-64 | `asa-1.7.2-1.x86_64.rpm` | 含二进制、EasyTier、man、桌面入口与图标 |
 
 ### Linux 发行版包
 
 ```bash
 # Arch
-sudo pacman -U asa-1.7.1-1-x86_64.pkg.tar.zst
+sudo pacman -U asa-1.7.2-1-x86_64.pkg.tar.zst
 
 # Debian / Ubuntu
-sudo apt install ./asa_1.7.1_amd64.deb
+sudo apt install ./asa_1.7.2_amd64.deb
 
 # Fedora / RHEL
-sudo dnf install ./asa-1.7.1-1.x86_64.rpm
+sudo dnf install ./asa-1.7.2-1.x86_64.rpm
 ```
 
 安装后直接运行 `asa`，或从应用菜单打开 ASA。安装包是静态二进制，不依赖系统 Rust 工具链。
@@ -559,6 +560,9 @@ Android 版说明：
 - 进入频道时会从本地 JSONL 加载最近历史；`/sync` 可以继续向在线成员拉取
 - 频道列表顶部会显示局域网内发现的频道，设置密码的频道需要输入密码
 - 查看文件传输进度，或直接打开系统文件管理器中的 ASA 下载目录
+- 频道列表右侧垃圾桶可删除频道，确认框可选「同时删除该频道的聊天记录」
+  - 删除只影响本机，不会解散其他成员的频道
+  - 删除正在连接的频道会先自动退出（停止节点与前台服务）
 - 聊天页电话按钮发起 1:1 语音通话；顶部语音房按钮加入频道多人语音
 - 输入栏麦克风按钮录制语音消息；聊天流语音条点击播放/停止
 - 首次使用语音会请求麦克风权限

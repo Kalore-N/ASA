@@ -13,10 +13,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -60,10 +62,13 @@ fun GroupListScreen(
     onCreate: () -> Unit,
     onJoin: () -> Unit,
     onRename: (String, String) -> Unit,
+    onDelete: (SavedGroup, Boolean) -> Unit,
     onToggleEasytier: (String, Boolean) -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     var renameTarget by remember { mutableStateOf<SavedGroup?>(null) }
+    var deleteTarget by remember { mutableStateOf<SavedGroup?>(null) }
+    var purgeLogs by remember { mutableStateOf(false) }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -111,6 +116,10 @@ fun GroupListScreen(
                             group = group,
                             onEnter = { onEnter(group.id) },
                             onRename = { renameTarget = group },
+                            onDelete = {
+                                purgeLogs = false
+                                deleteTarget = group
+                            },
                             onToggleEasytier = { enabled ->
                                 onToggleEasytier(group.id, enabled)
                             },
@@ -137,6 +146,53 @@ fun GroupListScreen(
                 ) { Text("加入频道") }
             }
         }
+    }
+
+    deleteTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            shape = ItemShape,
+            title = { Text("删除频道") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "确定删除「${target.name}」？只删除本机保存的频道配置，" +
+                            "不会解散其他成员的频道。",
+                        fontSize = 13.sp,
+                    )
+                    if (state.roomId == target.id) {
+                        Text(
+                            "该频道正在连接，确认后会先退出频道。",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { purgeLogs = !purgeLogs },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(
+                            checked = purgeLogs,
+                            onCheckedChange = null,
+                        )
+                        Text("同时删除该频道的聊天记录（不可恢复）", fontSize = 12.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDelete(target, purgeLogs)
+                    deleteTarget = null
+                }) {
+                    Text("删除", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) { Text("取消") }
+            },
+        )
     }
 
     renameTarget?.let { target ->
@@ -173,6 +229,7 @@ private fun GroupRow(
     group: SavedGroup,
     onEnter: () -> Unit,
     onRename: () -> Unit,
+    onDelete: () -> Unit,
     onToggleEasytier: (Boolean) -> Unit,
 ) {
     Surface(
@@ -228,6 +285,13 @@ private fun GroupRow(
             )
             IconButton(onClick = onRename) {
                 Icon(Icons.Filled.Edit, contentDescription = "修改名称")
+            }
+            IconButton(onClick = onDelete) {
+                Icon(
+                    Icons.Filled.DeleteOutline,
+                    contentDescription = "删除频道",
+                    tint = MaterialTheme.colorScheme.error,
+                )
             }
         }
     }

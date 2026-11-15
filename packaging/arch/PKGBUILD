@@ -1,5 +1,5 @@
 pkgname=asa
-pkgver=1.7.1
+pkgver=1.7.2
 pkgrel=1
 packager="Kalore-N <zhanghaoyu2421@outlook.com>"
 pkgdesc="去中心化 TUI 群聊"

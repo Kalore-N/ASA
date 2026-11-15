@@ -125,6 +125,7 @@ class MainActivity : ComponentActivity() {
                                 vm.showConnect()
                             },
                             onRename = { roomId, name -> vm.renameGroup(roomId, name) },
+                            onDelete = { group, purgeLogs -> vm.deleteGroup(group.id, purgeLogs) },
                             onToggleEasytier = { roomId, enabled ->
                                 vm.toggleEasytier(roomId, enabled)
                             },

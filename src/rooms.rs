@@ -200,12 +200,20 @@ pub fn active(dirs: &RuntimeDirs) -> Result<Option<RoomConfig>> {
     RoomConfig::load(&legacy_path(dirs))
 }
 
-/// 删除本地保存的群（不删除聊天日志和下载文件）。
+/// 删除本地保存的群（默认不删除聊天日志和下载文件）。
+///
+/// 同时清理本机频道设置（名称、EasyTier 开关、加入密码等），避免重新加入时
+/// 旧设置又冒出来。
 pub fn remove(dirs: &RuntimeDirs, room_id: &str) -> Result<()> {
     let path = room_path(dirs, room_id);
     if path.exists() {
         std::fs::remove_file(&path)
             .with_context(|| format!("删除群配置失败: {}", path.display()))?;
+    }
+    let profile = config::group_path(dirs, room_id);
+    if profile.exists() {
+        std::fs::remove_file(&profile)
+            .with_context(|| format!("删除群设置失败: {}", profile.display()))?;
     }
     let mut index = read_index(dirs);
     index.groups.retain(|entry| entry.id != room_id);
@@ -213,6 +221,39 @@ pub fn remove(dirs: &RuntimeDirs, room_id: &str) -> Result<()> {
         index.active = index.groups.first().map(|entry| entry.id.clone());
     }
     write_index(dirs, &index)
+}
+
+/// 删除频道，可选同时清理该频道的聊天记录；返回删除的日志文件数。
+pub fn remove_with_logs(dirs: &RuntimeDirs, room_id: &str, purge_logs: bool) -> Result<usize> {
+    remove(dirs, room_id)?;
+    if purge_logs {
+        remove_chat_logs(dirs, room_id)
+    } else {
+        Ok(0)
+    }
+}
+
+/// 删除该频道的本地 JSONL 聊天记录（下载文件不在其中）。
+pub fn remove_chat_logs(dirs: &RuntimeDirs, room_id: &str) -> Result<usize> {
+    if room_id.is_empty() {
+        return Ok(0);
+    }
+    let prefix = format!("asa-{room_id}-");
+    let Ok(entries) = std::fs::read_dir(&dirs.logs) else {
+        return Ok(0);
+    };
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with(&prefix) || !name.ends_with(".jsonl") {
+            continue;
+        }
+        std::fs::remove_file(entry.path())
+            .with_context(|| format!("删除聊天记录失败: {}", entry.path().display()))?;
+        removed += 1;
+    }
+    Ok(removed)
 }
 
 pub fn path_for(dirs: &RuntimeDirs, room_id: &str) -> PathBuf {
@@ -292,6 +333,43 @@ mod tests {
         let groups = list(&dirs).unwrap();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].id, first.id);
+    }
+
+    #[test]
+    fn remove_group_clears_profile_and_optional_logs() {
+        let dirs = dirs("remove-profile");
+        let identity = Identity::generate();
+        let room = RoomConfig::create(&identity);
+        let other = RoomConfig::create(&identity);
+        save(&dirs, &room).unwrap();
+        save(&dirs, &other).unwrap();
+
+        let mut profile = GroupProfile::default();
+        profile.name = Some("待删除".to_string());
+        profile.save(&dirs, &room.id).unwrap();
+        assert!(config::group_path(&dirs, &room.id).exists());
+
+        let target_log = dirs.logs.join(format!("asa-{}-2026-01-01.jsonl", room.id));
+        let other_log = dirs.logs.join(format!("asa-{}-2026-01-01.jsonl", other.id));
+        std::fs::write(&target_log, "{}\n").unwrap();
+        std::fs::write(&other_log, "{}\n").unwrap();
+
+        let removed = remove_with_logs(&dirs, &room.id, false).unwrap();
+        assert_eq!(removed, 0);
+        assert!(!config::group_path(&dirs, &room.id).exists());
+        assert!(!room_path(&dirs, &room.id).exists());
+        assert!(target_log.exists(), "不清理数据时聊天记录应保留");
+
+        // 重新加入同一频道后，旧名称不应残留。
+        save(&dirs, &room).unwrap();
+        let groups = list(&dirs).unwrap();
+        let entry = groups.iter().find(|group| group.id == room.id).unwrap();
+        assert_eq!(entry.name, format!("频道 {}", room.short_id()));
+
+        let removed = remove_with_logs(&dirs, &room.id, true).unwrap();
+        assert_eq!(removed, 1);
+        assert!(!target_log.exists());
+        assert!(other_log.exists(), "不应删除其他频道的日志");
     }
 
     #[test]
