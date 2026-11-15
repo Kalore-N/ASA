@@ -2,7 +2,7 @@
 
 这是我第一次尝试vibe coding的产物，随便写了点小东西玩玩
 
-当前版本：**1.7.2**
+当前版本：**1.7.3**
 
 ASA 是一个用 Rust 编写的**完全去中心化**终端频道工具：没有中心服务器，每个参与者都是对等节点。支持局域网自动发现、跨网手动连接、端到端加密、本地聊天记录（JSONL）以及文件传输。
 
@@ -514,25 +514,25 @@ GitHub Releases 提供各平台的可运行产物；源码仓库不包含构建�
 
 | 平台 | 文件 | 说明 |
 | --- | --- | --- |
-| Linux x86-64 | `asa-1.7.2-linux-x86_64.tar.gz` | 含 `asa`、`easytier-core`、`easytier-cli` |
-| Windows x86-64 | `asa-1.7.2-windows-x86_64.zip` | 含 `asa.exe`、EasyTier、`wintun.dll` |
-| Android arm64 | `asa-1.7.2-android-arm64.apk` | 真机推荐；含 arm64 EasyTier 原生库 |
-| Android x86_64 | `asa-1.7.2-android-x86_64.apk` | 模拟器 / x86_64 平板 |
-| Arch Linux x86-64 | `asa-1.7.2-1-x86_64.pkg.tar.zst` | 含二进制、EasyTier、man、桌面入口与图标 |
-| Debian / Ubuntu amd64 | `asa_1.7.2_amd64.deb` | 含二进制、EasyTier、man、桌面入口与图标 |
-| Fedora / RHEL x86-64 | `asa-1.7.2-1.x86_64.rpm` | 含二进制、EasyTier、man、桌面入口与图标 |
+| Linux x86-64 | `asa-1.7.3-linux-x86_64.tar.gz` | 含 `asa`、`easytier-core`、`easytier-cli` |
+| Windows x86-64 | `asa-1.7.3-windows-x86_64.zip` | 含 `asa.exe`、EasyTier、`wintun.dll` |
+| Android arm64 | `asa-1.7.3-android-arm64.apk` | 真机推荐；含 arm64 EasyTier 原生库 |
+| Android x86_64 | `asa-1.7.3-android-x86_64.apk` | 模拟器 / x86_64 平板 |
+| Arch Linux x86-64 | `asa-1.7.3-1-x86_64.pkg.tar.zst` | 含二进制、EasyTier、man、桌面入口与图标 |
+| Debian / Ubuntu amd64 | `asa_1.7.3_amd64.deb` | 含二进制、EasyTier、man、桌面入口与图标 |
+| Fedora / RHEL x86-64 | `asa-1.7.3-1.x86_64.rpm` | 含二进制、EasyTier、man、桌面入口与图标 |
 
 ### Linux 发行版包
 
 ```bash
 # Arch
-sudo pacman -U asa-1.7.2-1-x86_64.pkg.tar.zst
+sudo pacman -U asa-1.7.3-1-x86_64.pkg.tar.zst
 
 # Debian / Ubuntu
-sudo apt install ./asa_1.7.2_amd64.deb
+sudo apt install ./asa_1.7.3_amd64.deb
 
 # Fedora / RHEL
-sudo dnf install ./asa-1.7.2-1.x86_64.rpm
+sudo dnf install ./asa-1.7.3-1.x86_64.rpm
 ```
 
 安装后直接运行 `asa`，或从应用菜单打开 ASA。安装包是静态二进制，不依赖系统 Rust 工具链。
@@ -560,6 +560,10 @@ Android 版说明：
 - 进入频道时会从本地 JSONL 加载最近历史；`/sync` 可以继续向在线成员拉取
 - 频道列表顶部会显示局域网内发现的频道，设置密码的频道需要输入密码
 - 查看文件传输进度，或直接打开系统文件管理器中的 ASA 下载目录
+- 设置页「关于」显示应用版本、核心版本；点「检查更新」连接 GitHub Releases 检测新版本
+  - 只在手动点击时联网，不会后台轮询
+  - 发现新版可选择「下载并安装」：应用内下载 APK（带进度条），完成后调起系统安装器
+  - 首次安装需允许「安装未知应用」；下载文件保存在应用私有目录
 - 频道列表右侧垃圾桶可删除频道，确认框可选「同时删除该频道的聊天记录」
   - 删除只影响本机，不会解散其他成员的频道
   - 删除正在连接的频道会先自动退出（停止节点与前台服务）
@@ -569,7 +573,7 @@ Android 版说明：
 - 长按消息正文进入系统文本选择，可只复制正文；向左滑动消息可回复
 
 - 页面采用小圆角：消息气泡 8dp，按钮、输入框和卡片 6dp。
-- 设置页包含下载保存位置与复制、单文件上限、主题、字号、紧凑布局、mDNS、中继、自动接受；与 `config.json` 字段对应。
+- 设置页包含下载保存位置与复制、单文件上限、主题、字号、紧凑布局、mDNS、中继、自动接受、版本号与检查更新；与 `config.json` 字段对应。
 - 启动后进入「选择频道」页面，按本机名称选择保存的频道；聊天菜单可「切换频道」。
 - 「加入频道」不会覆盖已有频道，新频道会追加到列表；「创建频道」每次创建新频道。
 - 新消息在应用后台时发送系统通知；应用在前台时不打扰。首次启动会请求通知权限。
