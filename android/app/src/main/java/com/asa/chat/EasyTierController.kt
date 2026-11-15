@@ -57,7 +57,14 @@ object EasyTierController {
         if (running) stop(context)
         lastError = null
         val config = buildConfig(network, secret, ipv4, nodes)
-        Log.i(TAG, "EasyTier config:\n$config")
+        Log.i(
+            TAG,
+            "EasyTier config:\n" +
+                config.replace(
+                    Regex("""network_secret\s*=\s*"[^"]*""""),
+                    """network_secret = "***"""",
+                ),
+        )
         return try {
             val parsed = EasyTierJNI.parseConfig(config)
             if (parsed != 0) {
