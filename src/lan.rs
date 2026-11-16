@@ -575,6 +575,7 @@ pub fn save_joined_channel(
     password: Option<&str>,
 ) -> Result<RoomConfig> {
     let (parsed, _entries) = RoomConfig::parse_invite_full(invite)?;
+    let invite_et_nodes = parsed.et_nodes.clone();
     let room = match crate::rooms::load(dirs, &parsed.id)? {
         Some(mut existing) => {
             for entry in &parsed.entries {
@@ -582,7 +583,7 @@ pub fn save_joined_channel(
                     existing.entries.push(entry.clone());
                 }
             }
-            for node in &parsed.et_nodes {
+            for node in &invite_et_nodes {
                 if !existing.et_nodes.iter().any(|item| item == node) {
                     existing.et_nodes.push(node.clone());
                 }
@@ -592,13 +593,22 @@ pub fn save_joined_channel(
         None => parsed,
     };
     crate::rooms::save(dirs, &room)?;
+    let mut config = crate::config::Config::ensure(dirs)?;
+    let mut pool = crate::easytier::normalize_nodes(config.easytier.nodes.iter());
+    if crate::easytier::merge_pool(&mut pool, &invite_et_nodes) {
+        config.easytier.nodes = pool.clone();
+        config.save(&crate::config::config_path(dirs))?;
+    }
     let path = crate::config::group_path(dirs, &room.id);
     let mut profile = GroupProfile::load_at(&path).unwrap_or_default();
     if let Some(password) = password.filter(|value| !value.is_empty()) {
         profile.join_password_enc = Some(seal_saved_password(&room.key, password)?);
     }
-    if profile.easytier_enabled.is_none() && !room.et_nodes.is_empty() {
+    if profile.easytier_enabled.is_none() && !pool.is_empty() {
         profile.easytier_enabled = Some(true);
+    }
+    if profile.et_node.is_none() {
+        profile.et_node = crate::easytier::selected_node(&pool, None);
     }
     profile.save_at(&path)?;
     crate::rooms::set_active(dirs, &room.id)?;

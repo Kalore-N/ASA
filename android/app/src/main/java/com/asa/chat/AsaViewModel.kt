@@ -60,6 +60,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                         downloads = obj.optString("downloads"),
                         groups = parseGroups(obj.optJSONArray("groups")),
                         easytierEnabled = obj.optBoolean("easytier_enabled"),
+                        etSelectedNode = obj.optString("et_selected"),
                     )
                 }
             }
@@ -335,13 +336,16 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
             if (obj.optBoolean("ok")) {
                 val etEnabled = obj.optBoolean("easytier_enabled")
                 val etNodes = obj.optJSONArray("et_nodes").toStringList()
+                val etSelected = obj.optString("et_selected")
+                    .ifBlank { etNodes.firstOrNull().orEmpty() }
                 val etNetwork = obj.optString("et_network")
                 val etSecret = obj.optString("et_secret")
                 val etIpv4 = obj.optString("et_ipv4")
                 var etError: String? = null
                 android.util.Log.i(
                     "AsaEasyTier",
-                    "native start: enabled=$etEnabled nodes=$etNodes network=${etNetwork.take(10)} ip=$etIpv4",
+                    "native start: enabled=$etEnabled nodes=$etNodes selected=$etSelected " +
+                        "network=${etNetwork.take(10)} ip=$etIpv4",
                 )
 
                 if (!etEnabled) {
@@ -359,7 +363,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                             etNetwork,
                             etSecret,
                             "$etIpv4/16",
-                            etNodes,
+                            listOf(etSelected),
                             obj.optString("room_id"),
                         )
                     ) {
@@ -426,6 +430,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                         easytierEnabled = etEnabled,
                         easytierIp = if (etError == null && etEnabled) etIpv4 else null,
                         easytierError = etError,
+                        etSelectedNode = etSelected,
                     )
                 }
             } else {
@@ -1033,6 +1038,56 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                     ?: "删除频道失败"
                 _state.update { it.copy(error = message) }
             }
+        }
+    }
+
+    /** 选择当前频道使用的 EasyTier 节点（重新进入频道后生效）。 */
+    fun selectEtNode(node: String) {
+        val roomId = _state.value.roomId
+        if (roomId.isBlank()) {
+            _state.update { it.copy(error = "请先进入频道再选择节点") }
+            return
+        }
+        val app = getApplication<Application>()
+        val result = runCatching {
+            JSONObject(NativeBridge.setEtNode(dataDir(app), roomId, node))
+        }.getOrNull()
+        if (result?.optBoolean("ok") == true) {
+            _state.update {
+                it.copy(
+                    etSelectedNode = node,
+                    info = "已选择节点，重新进入频道后生效",
+                  )
+            }
+        } else {
+            val message = result?.optString("error")?.takeIf { it.isNotBlank() }
+                ?: "选择 EasyTier 节点失败"
+            _state.update { it.copy(error = message) }
+        }
+    }
+
+    /** 删除节点，并清理所有频道里残留的旧配置。 */
+    fun removeEtNode(node: String) {
+        val app = getApplication<Application>()
+        val result = runCatching {
+            JSONObject(NativeBridge.removeEtNode(dataDir(app), node))
+        }.getOrNull()
+        if (result?.optBoolean("ok") == true) {
+            val roomId = _state.value.roomId
+            val selected = if (roomId.isBlank()) {
+                ""
+            } else {
+                runCatching {
+                    JSONObject(NativeBridge.etSelected(dataDir(app), roomId)).optString("node")
+                }.getOrDefault("")
+            }
+            _state.update {
+                it.copy(etSelectedNode = selected, info = "已删除 EasyTier 节点")
+            }
+        } else {
+            val message = result?.optString("error")?.takeIf { it.isNotBlank() }
+                ?: "删除 EasyTier 节点失败"
+            _state.update { it.copy(error = message) }
         }
     }
 

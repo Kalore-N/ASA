@@ -256,6 +256,31 @@ pub fn remove_chat_logs(dirs: &RuntimeDirs, room_id: &str) -> Result<usize> {
     Ok(removed)
 }
 
+/// 从所有频道配置和本机频道设置中移除指定 EasyTier 节点。
+///
+/// 用于用户删除节点时彻底清理，避免重启后从旧频道配置里“复活”。
+pub fn purge_easytier_node(dirs: &RuntimeDirs, node: &str) -> Result<usize> {
+    let mut changed = 0usize;
+    for group in list(dirs)? {
+        if let Ok(Some(mut room)) = load(dirs, &group.id) {
+            let before = room.et_nodes.len();
+            room.et_nodes.retain(|item| item != node);
+            if room.et_nodes.len() != before {
+                save(dirs, &room)?;
+                changed += 1;
+            }
+        }
+        let path = config::group_path(dirs, &group.id);
+        let mut profile = GroupProfile::load_at(&path).unwrap_or_default();
+        if profile.et_node.as_deref() == Some(node) {
+            profile.et_node = None;
+            profile.save_at(&path)?;
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
 pub fn path_for(dirs: &RuntimeDirs, room_id: &str) -> PathBuf {
     room_path(dirs, room_id)
 }
@@ -370,6 +395,41 @@ mod tests {
         assert_eq!(removed, 1);
         assert!(!target_log.exists());
         assert!(other_log.exists(), "不应删除其他频道的日志");
+    }
+
+    #[test]
+    fn purge_easytier_node_clears_room_and_profile() {
+        let dirs = dirs("purge-et");
+        let identity = Identity::generate();
+        let first = RoomConfig::create(&identity);
+        let second = RoomConfig::create(&identity);
+        let mut first = first;
+        let mut second = second;
+        first.et_nodes = vec!["tcp://old.example:11010".to_string()];
+        second.et_nodes = vec!["tcp://keep.example:11010".to_string()];
+        save(&dirs, &first).unwrap();
+        save(&dirs, &second).unwrap();
+
+        let mut profile = GroupProfile::default();
+        profile.et_node = Some("tcp://old.example:11010".to_string());
+        profile.save(&dirs, &first.id).unwrap();
+        let mut other = GroupProfile::default();
+        other.et_node = Some("tcp://keep.example:11010".to_string());
+        other.save(&dirs, &second.id).unwrap();
+
+        let changed = purge_easytier_node(&dirs, "tcp://old.example:11010").unwrap();
+        assert!(changed >= 1);
+        let first = load(&dirs, &first.id).unwrap().unwrap();
+        assert!(first.et_nodes.is_empty());
+        let first_profile =
+            GroupProfile::load_at(&config::group_path(&dirs, &first.id)).unwrap_or_default();
+        assert!(first_profile.et_node.is_none());
+        let second_profile =
+            GroupProfile::load_at(&config::group_path(&dirs, &second.id)).unwrap_or_default();
+        assert_eq!(
+            second_profile.et_node.as_deref(),
+            Some("tcp://keep.example:11010")
+        );
     }
 
     #[test]

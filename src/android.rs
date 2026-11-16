@@ -122,6 +122,7 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
                 .ok_or_else(|| anyhow!("加入频道需要邀请码"))?;
             let (parsed, addresses) = RoomConfig::parse_invite_full(text)?;
             invite_addresses = addresses;
+            let invite_et_nodes = parsed.et_nodes.clone();
             let room = match crate::rooms::load(&dirs, &parsed.id)? {
                 Some(mut existing) => {
                     for entry in &parsed.entries {
@@ -134,7 +135,7 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
                             existing.relays.push(relay.clone());
                         }
                     }
-                    for node in &parsed.et_nodes {
+                    for node in &invite_et_nodes {
                         if !existing.et_nodes.iter().any(|n| n == node) {
                             existing.et_nodes.push(node.clone());
                         }
@@ -147,6 +148,24 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
                     parsed
                 }
             };
+            // 邀请码里的节点进入全局池，方便之后选择和测试。
+            if !invite_et_nodes.is_empty() {
+                let mut updated = config.clone();
+                let mut pool = crate::easytier::normalize_nodes(updated.easytier.nodes.iter());
+                if crate::easytier::merge_pool(&mut pool, &invite_et_nodes) {
+                    updated.easytier.nodes = pool.clone();
+                    let _ = updated.save(&crate::config::config_path(&dirs));
+                }
+                let path = crate::config::group_path(&dirs, &room.id);
+                let mut profile = GroupProfile::load_at(&path).unwrap_or_default();
+                if profile.et_node.is_none() {
+                    profile.et_node = crate::easytier::selected_node(&pool, None);
+                }
+                if profile.easytier_enabled.is_none() {
+                    profile.easytier_enabled = Some(true);
+                }
+                let _ = profile.save_at(&path);
+            }
             room
         }
         "chat" => match cfg.room_id.as_deref() {
@@ -161,9 +180,15 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
     };
 
     let mut profile = GroupProfile::load(&dirs, &room.id).unwrap_or_default();
+    let mut et_pool = crate::easytier::normalize_nodes(config.easytier.nodes.iter());
+    if crate::easytier::merge_pool(&mut et_pool, &room.et_nodes) {
+        let mut updated = config.clone();
+        updated.easytier.nodes = et_pool.clone();
+        let _ = updated.save(&crate::config::config_path(&dirs));
+    }
     if profile.easytier_enabled.is_none() {
-        let auto = config.easytier.auto_enable && !config.easytier.nodes.is_empty();
-        profile.easytier_enabled = Some(!room.et_nodes.is_empty() || auto);
+        let auto = config.easytier.auto_enable && !et_pool.is_empty();
+        profile.easytier_enabled = Some(!et_pool.is_empty() || auto);
         let _ = profile.save(&dirs, &room.id);
     }
     let nick = cfg
@@ -233,29 +258,16 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
         ),
         _ => Some(SocketAddr::new(lan_ip, port)),
     };
-    let mut effective_et_nodes: Vec<String> = Vec::new();
-    for node in cfg
-        .et_nodes
-        .iter()
-        .chain(room.et_nodes.iter())
-        .chain(config.easytier.nodes.iter())
-    {
-        if let Ok(node) = crate::easytier::normalize_node(node) {
-            if !effective_et_nodes.contains(&node) {
-                effective_et_nodes.push(node);
-            }
-        }
+    // 旧版本频道里的节点也并入全局池，统一以全局池为准。
+    crate::easytier::merge_pool(&mut et_pool, &cfg.et_nodes);
+    crate::easytier::merge_pool(&mut et_pool, &room.et_nodes);
+    let et_selected = crate::easytier::selected_node(&et_pool, profile.et_node.as_deref());
+    if profile.et_node.as_deref() != et_selected.as_deref() {
+        profile.et_node = et_selected.clone();
+        let _ = profile.save(&dirs, &room.id);
     }
-    // 邀请码只携带当前频道实际使用的节点；开启 ET 且频道还没有节点时，
-    // 把全局节点复制到频道配置，后续邀请码和重启都会沿用。
-    if profile.easytier_enabled.unwrap_or(false)
-        && room.et_nodes.is_empty()
-        && !effective_et_nodes.is_empty()
-    {
-        room.et_nodes = effective_et_nodes.clone();
-        let _ = crate::rooms::save(&dirs, &room);
-    }
-    let invite_et_nodes = room.et_nodes.clone();
+    // 邀请码携带完整节点池，加入方可自行选择或测试。
+    let invite_et_nodes = et_pool.clone();
     let mut extra_entries = Vec::new();
     if advertise.map(|addr| addr.ip() != lan_ip).unwrap_or(false) {
         extra_entries.push(format!("{lan_ip}:{port}"));
@@ -351,7 +363,8 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
         "downloads": downloads.display().to_string(),
         "port": port,
         "easytier_enabled": profile.easytier_enabled.unwrap_or(false),
-        "et_nodes": effective_et_nodes,
+        "et_nodes": et_pool,
+        "et_selected": et_selected,
         "et_network": et_network,
         "et_secret": et_secret,
         "et_ipv4": et_ipv4,
@@ -789,21 +802,8 @@ pub extern "system" fn Java_com_asa_chat_NativeBridge_setEasytierEnabled<'local>
         profile.save_at(&path)?;
         if enabled != 0 {
             let config = Config::ensure(&dirs)?;
-            if !config.easytier.nodes.is_empty() {
-                let mut room = crate::rooms::load(&dirs, &room_id)?
-                    .ok_or_else(|| anyhow!("找不到本地频道: {room_id}"))?;
-                let mut changed = false;
-                for node in &config.easytier.nodes {
-                    if let Ok(node) = crate::easytier::normalize_node(node) {
-                        if !room.et_nodes.contains(&node) {
-                            room.et_nodes.push(node);
-                            changed = true;
-                        }
-                    }
-                }
-                if changed {
-                    crate::rooms::save(&dirs, &room)?;
-                }
+            if crate::easytier::normalize_nodes(config.easytier.nodes.iter()).is_empty() {
+                return Err(anyhow!("还没有 EasyTier 节点，请先添加节点"));
             }
         }
         Ok(json!({
@@ -838,6 +838,101 @@ pub extern "system" fn Java_com_asa_chat_NativeBridge_renameGroup<'local>(
         profile.name = Some(name);
         profile.save(&dirs, &room_id)?;
         Ok(json!({ "ok": true }))
+    })();
+    to_jstring(
+        &mut env,
+        match result {
+            Ok(value) => value.to_string(),
+            Err(err) => fail(err),
+        },
+    )
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_asa_chat_NativeBridge_etSelected<'local>(
+    mut env: jni::JNIEnv<'local>,
+    _this: jni::objects::JObject<'local>,
+    data_dir: jni::objects::JString<'local>,
+    room_id: jni::objects::JString<'local>,
+) -> jni::sys::jstring {
+    let result = (|| -> Result<serde_json::Value> {
+        let root = PathBuf::from(read_string(&mut env, &data_dir)?);
+        let room_id = read_string(&mut env, &room_id)?;
+        let dirs = RuntimeDirs::ensure(&root)?;
+        let config = Config::ensure(&dirs)?;
+        let pool = crate::easytier::normalize_nodes(config.easytier.nodes.iter());
+        let profile = GroupProfile::load(&dirs, &room_id).unwrap_or_default();
+        let selected = crate::easytier::selected_node(&pool, profile.et_node.as_deref());
+        Ok(json!({ "ok": true, "node": selected }))
+    })();
+    to_jstring(
+        &mut env,
+        match result {
+            Ok(value) => value.to_string(),
+            Err(err) => fail(err),
+        },
+    )
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_asa_chat_NativeBridge_setEtNode<'local>(
+    mut env: jni::JNIEnv<'local>,
+    _this: jni::objects::JObject<'local>,
+    data_dir: jni::objects::JString<'local>,
+    room_id: jni::objects::JString<'local>,
+    node: jni::objects::JString<'local>,
+) -> jni::sys::jstring {
+    let result = (|| -> Result<serde_json::Value> {
+        let root = PathBuf::from(read_string(&mut env, &data_dir)?);
+        let room_id = read_string(&mut env, &room_id)?;
+        let node = read_string(&mut env, &node)?;
+        let dirs = RuntimeDirs::ensure(&root)?;
+        let config = Config::ensure(&dirs)?;
+        let pool = crate::easytier::normalize_nodes(config.easytier.nodes.iter());
+        let path = crate::config::group_path(&dirs, &room_id);
+        let mut profile = GroupProfile::load_at(&path).unwrap_or_default();
+        let node = node.trim();
+        if node.is_empty() {
+            profile.et_node = None;
+        } else {
+            let node = crate::easytier::normalize_node(node)?;
+            if !pool.iter().any(|item| item == &node) {
+                return Err(anyhow!("该节点不在节点列表中，请先添加"));
+            }
+            profile.et_node = Some(node);
+        }
+        profile.save_at(&path)?;
+        Ok(json!({ "ok": true, "node": profile.et_node }))
+    })();
+    to_jstring(
+        &mut env,
+        match result {
+            Ok(value) => value.to_string(),
+            Err(err) => fail(err),
+        },
+    )
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_asa_chat_NativeBridge_removeEtNode<'local>(
+    mut env: jni::JNIEnv<'local>,
+    _this: jni::objects::JObject<'local>,
+    data_dir: jni::objects::JString<'local>,
+    node: jni::objects::JString<'local>,
+) -> jni::sys::jstring {
+    let result = (|| -> Result<serde_json::Value> {
+        let root = PathBuf::from(read_string(&mut env, &data_dir)?);
+        let node = read_string(&mut env, &node)?;
+        let node = crate::easytier::normalize_node(&node)?;
+        let dirs = RuntimeDirs::ensure(&root)?;
+        let mut config = Config::ensure(&dirs)?;
+        let before = config.easytier.nodes.len();
+        config.easytier.nodes.retain(|item| item != &node);
+        if config.easytier.nodes.len() != before {
+            config.save(&crate::config::config_path(&dirs))?;
+        }
+        let purged = crate::rooms::purge_easytier_node(&dirs, &node)?;
+        Ok(json!({ "ok": true, "removed": before - config.easytier.nodes.len(), "purged": purged }))
     })();
     to_jstring(
         &mut env,

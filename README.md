@@ -107,15 +107,24 @@ ASA 可以把 [EasyTier](https://github.com/EasyTier/EasyTier) 当作可选的�
 EasyTier 是**可选**的。没有节点、没有权限或启动失败时，ASA 会自动回退到
 局域网 mDNS / 多中继，不阻塞聊天。
 
-### 添加节点
+### 添加并选择节点
 
 节点地址来自 EasyTier 公共节点列表（例如 `https://info.qtet.cn/uptime/easytier`），
 格式为 `tcp://host:11010`、`udp://host:11010`、`ws://host` 或 `wss://host`。
 部分公共节点地址被打码（含 `*`），需要去 EasyTier QQ 群获取完整地址。
 
-- TUI 频道大厅按 `n` 添加；聊天内 `/et add <地址>`、`/et list`、`/et remove <编号>`
-- Android：设置 → EasyTier 节点 → 添加；也可以点「从 qtet 监控页一键导入」，自动导入未打码节点
+- TUI 频道大厅按 `n` 添加；聊天内 `/et add <地址> [更多地址…]`、`/et list`、`/et remove <编号>`
+- 可以保存多个节点，但**每个频道只使用其中一个**：`/et use <编号>` 选择；
+  不选择时使用列表中第一个
+- `/et test [编号]` 用 TCP 连接测试节点，显示“通/不通”和毫秒延迟；
+  建议先测试再选择，避免把不通的节点设为当前节点
+- Android：设置 → EasyTier 节点 → 添加；也可以点「从 qtet 监控页一键导入」。
+  每个节点右侧有「测试」按钮（显示延迟），左侧单选按钮选择当前频道使用的节点；
+  选择按频道保存，重新进入频道后生效
 - 没有节点时，打开 ASA 会在频道大厅提示添加，但允许跳过
+
+节点列表和选择都保存在本机；删除节点会同时清理所有频道里残留的旧节点和选择，
+避免重启后旧节点又出现。
 
 ### 为频道开启
 
@@ -126,8 +135,9 @@ EasyTier 是**可选**的。没有节点、没有权限或启动失败时，ASA 
 ### 邀请码
 
 邀请码已经包含频道密钥，所以 EasyTier 的网络名和密钥由频道密钥派生，
-不需要额外传递。邀请码会携带当前频道的 EasyTier 节点（`&et=`）：
-受邀者加入时会自动写入频道配置并默认开启 ET，不需要手动再添加节点。
+不需要额外传递。邀请码会携带本机保存的 EasyTier 节点池（`&et=`，可多个）：
+受邀者加入时会把它们并入自己的节点列表并默认开启 ET，
+然后可以使用 `/et use` 或 Android 设置里的单选按钮选择实际节点。
 
 ```
 &et=<base64url(节点地址)>
@@ -146,6 +156,8 @@ EasyTier 是**可选**的。没有节点、没有权限或启动失败时，ASA 
   `setcap cap_net_admin,cap_net_raw+ep /usr/lib/asa/easytier-core`；
   便携版首次使用执行：
   `sudo setcap cap_net_admin,cap_net_raw+ep ./easytier-core`
+- 如果 `/et status` 显示 `Operation not permitted`，就是缺少上面的 TUN 权限；
+  此时节点测试可能显示“通”，但 EasyTier 仍然无法建立虚拟网络
 - **Windows**：需要以管理员身份运行 `asa.exe`，EasyTier 才能创建 TUN 网卡
 - **Android**：使用 VpnService，不需要 root；首次开启会弹出系统 VPN 授权
 
@@ -197,7 +209,7 @@ Android 同一用户同时只能有一个 **VpnService**。ASA 使用 per-app VP
 | `/sync` | 按 `sync.count` 条向在线成员请求历史记录；0 表示全部，默认 50 |
 | `/channels` | 打开频道选择框 |
 | `/switch <名称或 ID>` | 切换到指定频道 |
-| `/et [status\|on\|off\|add <地址>\|list\|remove <编号>]` | 管理 EasyTier 节点与当前频道内网穿透 |
+| `/et [status\|on\|off\|add <地址>\|list\|remove <编号>\|use <编号>\|test [编号]]` | 管理 EasyTier 节点、选择本频道节点、测试延迟 |
 | `/call <昵称> \| accept \| reject \| hangup \| mute \| ptt` | 1:1 语音通话 |
 | `/voice join` / `leave` / `mute` / `members` | 加入、退出、静音频道语音房、查看成员 |
 | `/voice <昵称> \| stop \| play <路径>` | 录制、发送、播放语音消息 |
@@ -226,16 +238,16 @@ asa import <文件>               导入群文件
   --port <端口>        TCP 监听端口，默认 7777
   --connect <地址>     手动连接成员，可重复
   --no-mdns            关闭局域网自动发现
-  --data-dir <路径>    数据目录
+  --data-dir <路径>    数据目录；默认 ~/.config/asa，指定后使用 <路径>/runtime
   --max-file-mb <MB>   单文件上限，默认 100，0 表示不限制
   --auto-accept        自动接受所有文件请求（有风险，慎用）
 ```
 
-未显式指定 `--port` 时，会复用 `runtime/data/settings.json` 中保存的端口。
+未显式指定 `--port` 时，会复用 `~/.config/asa/settings.json` 中保存的端口。
 
 ## 配置文件
 
-首次启动会在 `runtime/data/config.json` 生成全局配置：
+首次启动会在 `~/.config/asa/config.json` 生成全局配置：
 
 ```json
 {
@@ -268,7 +280,7 @@ asa import <文件>               导入群文件
 }
 ```
 
-- `download_dir`：接收文件的保存目录，支持 `~`；留空使用 `runtime/downloads`。
+- `download_dir`：接收文件的保存目录，支持 `~`；留空使用 `~/Downloads`（遵循 `XDG_DOWNLOAD_DIR`）。
 - `max_file_mb`：单文件上限，0 表示不限制。
 - `ui.theme`：`dark` / `light` / `high-contrast`（Android 立即生效；TUI 只保存偏好）。
 - `ui.font_size`：Android 字号；TUI 的终端字体由终端模拟器决定，程序无法可靠修改。
@@ -279,15 +291,15 @@ asa import <文件>               导入群文件
 - `network.relays`：跨网中继地址，默认空；部署中继后执行 `asa relay add` 写入。
 - `sync.enabled`：加入频道后自动向在线成员拉取最近聊天记录，默认开启。
 - `sync.count`：每次请求的条数，默认 50；设为 0 表示全部（最多 5000 条）。同步会从**本地全部 JSONL 历史**中取记录，并写入本地日志、按原时间插入界面；可用 `/sync` 手动触发。
-- `easytier.nodes`：手动导入或一键导入的 EasyTier 节点地址列表，默认空；为空时频道仍可用局域网/中继。
+- `easytier.nodes`：本机保存的 EasyTier 节点池，默认空；每个频道用群配置里的 `et_node` 选择其中一个，为空时用池中第一个。
 - `easytier.auto_enable`：有新节点时，新频道默认开启 EasyTier，默认 true。
 - `voice.enabled`：启用语音通话和语音消息。
 - `voice.codec` / `sample_rate` / `channels` / `frame_ms`：目前固定 PCM 16kHz 单声道，20ms/帧。
 - `voice.push_to_talk`：TUI 使用按住说话；false 为全双工。
-- `voice.record_dir`：语音消息保存目录；留空使用 `downloads/voice`。
+- `voice.record_dir`：语音消息保存目录；留空使用下载目录下的 `voice/`（默认 `~/Downloads/voice`）。
 - `voice.input_device` / `output_device`：Linux ALSA 设备或 Windows ffmpeg dshow 设备名。
 
-群配置在 `runtime/data/groups/<频道 ID>.json`，`null` 表示继承全局：
+群配置在 `~/.config/asa/groups/<频道 ID>.json`，`null` 表示继承全局：
 
 ```json
 {
@@ -297,7 +309,8 @@ asa import <文件>               导入群文件
   "max_file_mb": null,
   "auto_accept": null,
   "notify_mentions": null,
-  "easytier_enabled": null
+  "easytier_enabled": null,
+  "et_node": null
 }
 ```
 
@@ -306,6 +319,7 @@ asa import <文件>               导入群文件
 - `download_dir` / `max_file_mb` / `auto_accept`：按群覆盖全局。
 - `notify_mentions`：是否提示 @ 提及。
 - `easytier_enabled`：是否为此频道开启 EasyTier 内网穿透；`null` 表示关闭。
+- `et_node`：本频道选中的 EasyTier 节点；`null` 或节点已被删除时使用节点池第一个。
 
 ## 跨网与群固定
 
@@ -589,19 +603,25 @@ Android 版说明：
 
 ## 运行时数据
 
-默认数据目录为 `~/Documents/ASA`（可用 `--data-dir` 修改）：
+桌面端默认使用 XDG 标准位置：
 
 ```
-runtime/
-  data/        身份、全局配置、群配置
-  data/rooms/  每个群的配置（可多个）
-  data/groups/ 群名称、昵称、列表索引
-  logs/        聊天记录（JSONL）
-  downloads/   接收到的文件
-  tmp/         传输中的临时文件
+~/.config/asa/            身份、全局配置、群配置
+  config.json             全局配置
+  identity.json           ed25519 身份
+  rooms/<群ID>.json        每个频道的配置（可多个）
+  groups/<群ID>.json       频道名称/昵称/EasyTier 选择
+  groups/index.json        频道列表索引
+~/.local/state/asa/logs/  聊天记录与 EasyTier 日志
+~/Downloads/              接收到的文件（遵循 XDG_DOWNLOAD_DIR）
+~/.cache/asa/tmp/         传输中的临时文件
 ```
 
-Android 的数据目录位于应用私有空间：`/data/user/0/com.asa.chat/files/asa/runtime/`。
+- `--data-dir <路径>` 会改用自包含布局 `<路径>/runtime/{data,logs,downloads,tmp}`，
+  适合便携包、测试或把数据放在指定磁盘。
+- 从旧版本升级时，首次启动会自动把 `~/Documents/ASA/runtime` 下的身份、频道和日志
+  复制到新位置；旧下载文件保留在原处。
+- Android 的数据目录仍位于应用私有空间：`/data/user/0/com.asa.chat/files/asa/runtime/`。
 
 ## 构建
 

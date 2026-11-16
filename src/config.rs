@@ -351,6 +351,9 @@ pub struct GroupProfile {
     /// 是否为此频道开启 EasyTier 内网穿透。
     #[serde(default)]
     pub easytier_enabled: Option<bool>,
+    /// 本频道选中的 EasyTier 节点；为空或不在节点池中时使用第一个节点。
+    #[serde(default)]
+    pub et_node: Option<String>,
     /// 宿主设置的频道加入密码哈希。
     #[serde(default)]
     pub join_password: Option<JoinPassword>,

@@ -145,11 +145,15 @@ TCP 监听端口，默认 7777。未显式指定时会复用
 关闭局域网 mDNS 自动发现。
 .TP
 .BI "\-\-data\-dir " "路径"
-数据根目录，默认为
-.IR ~/Documents/ASA 。
-所有运行时数据都写在该目录下的
-.I runtime/
-子目录中。
+数据根目录。默认使用 XDG 标准位置：
+配置在
+.I ~/.config/asa ，
+日志在
+.I ~/.local/state/asa/logs ，
+下载在
+.IR ~/Downloads 。
+指定该选项后，所有运行时数据写入
+.IR 路径/runtime/ 。
 .TP
 .BI "\-\-max\-file\-mb " "MB"
 单个文件的大小上限，默认 100 MB。设为 0 表示不限制。
@@ -210,6 +214,13 @@ TCP 监听端口，默认 7777。未显式指定时会复用
 、
 .B /call ptt
 。
+.TP
+.BI "/et " "use 编号"
+选择当前频道使用的 EasyTier 节点（节点列表见
+.B /et list
+）。
+.B /et test [编号]
+用 TCP 连接测试节点是否可达并显示延迟。
 .TP
 .BI "/voice " "昵称"
 开始录制语音消息；
@@ -396,40 +407,40 @@ Android 在“加入频道”页自动搜索并显示局域网频道，点选后
 “同步聊天记录”“进行中的传输”“打开下载目录”。
 .SH FILES
 .TP
-.I ~/Documents/ASA/runtime/data/identity.json
+.I ~/.config/asa/identity.json
 本地 ed25519 身份与昵称。
 .TP
-.I ~/Documents/ASA/runtime/data/rooms/\fI群ID\fR.json
+.I ~/.config/asa/rooms/\fI群ID\fR.json
 每个群的配置：群 ID、群密钥、创建时间、入口与中继。
 .TP
-.I ~/Documents/ASA/runtime/data/groups/index.json
+.I ~/.config/asa/groups/index.json
 本地群列表索引与最近使用的群。
 .TP
-.I ~/Documents/ASA/runtime/data/room.json
+.I ~/.config/asa/room.json
 旧版单群配置；首次启动会自动迁移到 rooms/。
 .TP
-.I ~/Documents/ASA/runtime/data/config.json
+.I ~/.config/asa/config.json
 全局配置：下载目录、单文件上限、自动接受、UI 偏好（含 history_lines/vim_mode/scroll_step）、mDNS、中继、历史同步、EasyTier 节点与语音设置。
 .TP
-.I ~/Documents/ASA/runtime/data/groups/\fI群ID\fR.json
+.I ~/.config/asa/groups/\fI群ID\fR.json
 群配置：群内昵称、EasyTier 开关、加入密码哈希/加密密码，以及下载目录/大小上限/自动接受/提及提醒的覆盖项。
 .TP
-.I ~/Documents/ASA/runtime/data/settings.json
+.I ~/.config/asa/settings.json
 兼容旧版本的本地设置（端口）。
 .TP
-.I ~/Documents/ASA/runtime/logs/asa\-\fI群ID\fR\-\fI日期\fR.jsonl
+.I ~/.local/state/asa/logs/asa\-\fI群ID\fR\-\fI日期\fR.jsonl
 本地聊天记录，每行一个 JSON 对象。
 .TP
-.I ~/Documents/ASA/runtime/data/easytier/\fI群ID\fR.toml
+.I ~/.config/asa/easytier/\fI群ID\fR.toml
 EasyTier 运行配置（含派生网络密钥，权限 0600）。
 .TP
-.I ~/Documents/ASA/runtime/logs/easytier\-\fI群ID\fR.log
+.I ~/.local/state/asa/logs/easytier\-\fI群ID\fR.log
 EasyTier 子进程日志。
 .TP
-.I ~/Documents/ASA/runtime/downloads/
+.I ~/Downloads/
 接收完成的文件。
 .TP
-.I ~/Documents/ASA/runtime/tmp/
+.I ~/.cache/asa/tmp/
 传输过程中的临时文件。
 .SH ENVIRONMENT
 .TP

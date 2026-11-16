@@ -47,6 +47,8 @@ const HELP: &str = "\
 /switch <名称|ID>     切换到指定频道
 /et [status|on|off|add <地址>|list|remove <编号>]
                       EasyTier 节点与当前频道内网穿透
+/et use <编号> | test [编号]
+                      选择本频道使用的节点、测试节点延迟
 /call <昵称> | accept|reject|hangup|mute|ptt
                       1:1 语音通话
 /voice join|leave|mute|members
@@ -308,6 +310,9 @@ impl App {
             mouse_capture: true,
         };
         app.push_system("欢迎使用 ASA。直接输入文字回车发送；/help 查看命令；/invite 获取邀请码。");
+        if let Some(err) = app.easytier.error.clone() {
+            app.push_system(format!("EasyTier 未启动：{err}"));
+        }
         app
     }
 
@@ -1254,11 +1259,32 @@ impl App {
         }
     }
 
+    fn et_profile(&self) -> crate::config::GroupProfile {
+        crate::config::GroupProfile::load_at(&self.group_path).unwrap_or_default()
+    }
+
+    fn et_selected(&self) -> Option<String> {
+        let profile = self.et_profile();
+        crate::easytier::selected_node(&self.config_nodes, profile.et_node.as_deref())
+    }
+
+    fn reload_et_nodes(&mut self) {
+        if let Ok(config) = crate::config::Config::ensure(&self.dirs) {
+            self.config_nodes = crate::easytier::normalize_nodes(config.easytier.nodes.iter());
+        }
+    }
+
+    fn restart_for_et(&mut self) {
+        self.action = Some(TuiAction::Switch(self.room_id.clone()));
+    }
+
     fn handle_easytier(&mut self, rest: &str) {
         let mut parts = rest.split_whitespace();
         let action = parts.next().unwrap_or("status");
+        let args: Vec<&str> = parts.collect();
         match action {
             "" | "status" => {
+                let selected = self.et_selected();
                 let mut lines = Vec::new();
                 if self.easytier.running {
                     let ip = self
@@ -1267,8 +1293,8 @@ impl App {
                         .map(|ip| ip.to_string())
                         .unwrap_or_else(|| "-".to_string());
                     lines.push(format!("EasyTier: 运行中 · 虚拟 IP {ip}"));
-                    if !self.easytier.nodes.is_empty() {
-                        lines.push(format!("本频道节点: {}", self.easytier.nodes.join(", ")));
+                    if let Some(node) = &selected {
+                        lines.push(format!("当前节点: {node}"));
                     }
                 } else if let Some(err) = &self.easytier.error {
                     lines.push(format!("EasyTier: 未运行（{err}）"));
@@ -1276,16 +1302,27 @@ impl App {
                     lines.push("EasyTier: 未开启（/et on 为当前频道开启）".to_string());
                 }
                 if self.config_nodes.is_empty() {
-                    lines.push("全局节点: 未配置（/et add <地址>）".to_string());
+                    lines.push("节点池: 空（/et add <地址> 添加）".to_string());
                 } else {
-                    lines.push(format!("全局节点: {}", self.config_nodes.join(", ")));
+                    lines.push(format!(
+                        "节点池: {} 个{}",
+                        self.config_nodes.len(),
+                        selected
+                            .as_ref()
+                            .map(|node| format!(" · 本频道选中 {node}"))
+                            .unwrap_or_default()
+                    ));
                 }
+                lines.push(
+                    "命令: /et list · /et use <编号> · /et test [编号] · /et remove <编号>"
+                        .to_string(),
+                );
                 lines.push("提示：修改节点或开关后会自动重启当前频道。".to_string());
                 self.push_system(lines.join("\n"));
             }
             "on" | "off" => {
                 let enabled = action == "on";
-                if enabled && self.config_nodes.is_empty() && self.easytier.nodes.is_empty() {
+                if enabled && self.config_nodes.is_empty() {
                     self.set_status("没有 EasyTier 节点，先 /et add <地址>", true);
                     return;
                 }
@@ -1295,24 +1332,16 @@ impl App {
                             "EasyTier 已{}，正在重启频道…",
                             if enabled { "开启" } else { "关闭" }
                         ));
-                        self.action = Some(TuiAction::Switch(self.room_id.clone()));
+                        self.restart_for_et();
                     }
                     Err(err) => self.set_status(format!("保存 EasyTier 开关失败: {err}"), true),
                 }
             }
             "add" => {
-                let url = rest.trim_start_matches("add").trim();
-                if url.is_empty() {
-                    self.set_status("用法: /et add <tcp://host:port>", true);
+                if args.is_empty() {
+                    self.set_status("用法: /et add <tcp://host:port> [更多地址…]", true);
                     return;
                 }
-                let url = match crate::easytier::normalize_node(url) {
-                    Ok(url) => url,
-                    Err(err) => {
-                        self.set_status(format!("节点地址无效: {err}"), true);
-                        return;
-                    }
-                };
                 let mut config = match crate::config::Config::ensure(&self.dirs) {
                     Ok(config) => config,
                     Err(err) => {
@@ -1320,26 +1349,46 @@ impl App {
                         return;
                     }
                 };
-                if !config.easytier.nodes.contains(&url) {
-                    config.easytier.nodes.push(url.clone());
-                    if let Err(err) = config.save(&crate::config::config_path(&self.dirs)) {
-                        self.set_status(format!("保存节点失败: {err}"), true);
-                        return;
+                let mut added = Vec::new();
+                for raw in &args {
+                    let node = match crate::easytier::normalize_node(raw) {
+                        Ok(node) => node,
+                        Err(err) => {
+                            self.set_status(format!("节点地址无效（{raw}）: {err}"), true);
+                            return;
+                        }
+                    };
+                    if !config.easytier.nodes.contains(&node) {
+                        config.easytier.nodes.push(node.clone());
+                        added.push(node);
                     }
                 }
-                self.config_nodes = config.easytier.nodes.clone();
-                if let Ok(Some(mut room)) = crate::rooms::load(&self.dirs, &self.room_id) {
-                    if !room.et_nodes.contains(&url) {
-                        room.et_nodes.push(url.clone());
-                        let _ = crate::rooms::save(&self.dirs, &room);
-                    }
+                if added.is_empty() {
+                    self.set_status("这些节点已经在列表中", false);
+                    return;
+                }
+                if let Err(err) = config.save(&crate::config::config_path(&self.dirs)) {
+                    self.set_status(format!("保存节点失败: {err}"), true);
+                    return;
+                }
+                self.config_nodes = crate::easytier::normalize_nodes(config.easytier.nodes.iter());
+                let mut profile = self.et_profile();
+                if profile.et_node.is_none() {
+                    profile.et_node = crate::easytier::selected_node(&self.config_nodes, None);
+                    let _ = profile.save_at(&self.group_path);
                 }
                 self.push_system(format!(
-                    "已添加 EasyTier 节点: {url}\n用 /et on 立即为当前频道开启；下次进入频道也会使用。"
+                    "已添加 {} 个 EasyTier 节点：{}\n用 /et list 查看，/et use <编号> 选择本频道使用的节点。",
+                    added.len(),
+                    added.join(", ")
                 ));
+                if self.easytier.running {
+                    self.push_system("EasyTier 正在运行，自动重启频道以应用新节点…".to_string());
+                    self.restart_for_et();
+                }
             }
             "remove" => {
-                let Some(index) = parts.next().and_then(|text| text.parse::<usize>().ok()) else {
+                let Some(index) = args.first().and_then(|text| text.parse::<usize>().ok()) else {
                     self.set_status("用法: /et remove <编号>（/et list 查看编号）", true);
                     return;
                 };
@@ -1347,7 +1396,7 @@ impl App {
                     self.set_status("节点编号超出范围", true);
                     return;
                 }
-                let removed = self.config_nodes.remove(index - 1);
+                let removed = self.config_nodes[index - 1].clone();
                 let mut config = match crate::config::Config::ensure(&self.dirs) {
                     Ok(config) => config,
                     Err(err) => {
@@ -1360,31 +1409,111 @@ impl App {
                     self.set_status(format!("保存节点失败: {err}"), true);
                     return;
                 }
-                self.config_nodes = config.easytier.nodes.clone();
-                if let Ok(Some(mut room)) = crate::rooms::load(&self.dirs, &self.room_id) {
-                    room.et_nodes.retain(|node| node != &removed);
-                    let _ = crate::rooms::save(&self.dirs, &room);
+                // 同时清理所有频道里残留的旧节点和选中项，避免重启后“复活”。
+                let purged = crate::rooms::purge_easytier_node(&self.dirs, &removed).unwrap_or(0);
+                self.reload_et_nodes();
+                let mut profile = self.et_profile();
+                profile.et_node =
+                    crate::easytier::selected_node(&self.config_nodes, profile.et_node.as_deref());
+                let _ = profile.save_at(&self.group_path);
+                self.push_system(format!(
+                    "已移除 EasyTier 节点: {removed}（清理 {purged} 处频道配置）{}",
+                    if self.config_nodes.is_empty() {
+                        "\n节点池已空；/et on 将无法启动 EasyTier。"
+                    } else {
+                        ""
+                    }
+                ));
+                if self.easytier.running {
+                    self.restart_for_et();
                 }
-                self.push_system(format!("已移除 EasyTier 节点: {removed}"));
+            }
+            "use" | "select" => {
+                let Some(index) = args.first().and_then(|text| text.parse::<usize>().ok()) else {
+                    self.set_status("用法: /et use <编号>（/et list 查看编号）", true);
+                    return;
+                };
+                if index == 0 || index > self.config_nodes.len() {
+                    self.set_status("节点编号超出范围", true);
+                    return;
+                }
+                let node = self.config_nodes[index - 1].clone();
+                let mut profile = self.et_profile();
+                profile.et_node = Some(node.clone());
+                if let Err(err) = profile.save_at(&self.group_path) {
+                    self.set_status(format!("保存节点选择失败: {err}"), true);
+                    return;
+                }
+                self.push_system(format!("本频道将使用 EasyTier 节点: {node}\n正在重启频道…"));
+                self.restart_for_et();
+            }
+            "test" => {
+                let targets: Vec<(usize, String)> = match args.first() {
+                    Some(text) => match text.parse::<usize>() {
+                        Ok(index) if index > 0 && index <= self.config_nodes.len() => {
+                            vec![(index, self.config_nodes[index - 1].clone())]
+                        }
+                        _ => {
+                            self.set_status("用法: /et test [编号]（省略编号测试全部）", true);
+                            return;
+                        }
+                    },
+                    None => self
+                        .config_nodes
+                        .iter()
+                        .enumerate()
+                        .map(|(index, node)| (index + 1, node.clone()))
+                        .collect(),
+                };
+                if targets.is_empty() {
+                    self.set_status("还没有 EasyTier 节点，先 /et add <地址>", true);
+                    return;
+                }
+                let mut lines = vec!["EasyTier 节点测试（TCP 连接，超时 2 秒）：".to_string()];
+                for (index, node) in targets {
+                    let probe = crate::easytier::probe_node(&node, Duration::from_secs(2));
+                    let result = if probe.ok {
+                        match probe.latency_ms {
+                            Some(ms) => format!("通 · {ms} ms"),
+                            None => "通".to_string(),
+                        }
+                    } else {
+                        format!("不通 · {}", probe.detail)
+                    };
+                    lines.push(format!("{index}. {node} · {result}"));
+                }
+                self.push_system(lines.join("\n"));
             }
             "list" => {
                 if self.config_nodes.is_empty() {
                     self.push_system("尚未添加 EasyTier 节点；用 /et add <tcp://host:port> 添加。");
                 } else {
-                    let mut lines = vec!["EasyTier 节点：".to_string()];
+                    let selected = self.et_selected();
+                    let mut lines = vec![format!(
+                        "EasyTier 节点池（{} 个）：",
+                        self.config_nodes.len()
+                    )];
                     for (index, node) in self.config_nodes.iter().enumerate() {
-                        let mark = if self.easytier.nodes.contains(node) {
-                            "使用中"
+                        let mark = if selected.as_deref() == Some(node.as_str()) {
+                            "*"
+                        } else {
+                            " "
+                        };
+                        let running = if self.easytier.nodes.contains(node) {
+                            " 运行中"
                         } else {
                             ""
                         };
-                        lines.push(format!("{}. {} {}", index + 1, node, mark));
+                        lines.push(format!("{mark} {}. {node}{running}", index + 1));
                     }
+                    lines.push(
+                        "使用 /et use <编号> 选择本频道节点；/et test 测试连通性。".to_string(),
+                    );
                     self.push_system(lines.join("\n"));
                 }
             }
             _ => self.set_status(
-                "用法: /et [status|on|off|add <地址>|list|remove <编号>]",
+                "用法: /et [status|on|off|add <地址>|remove <编号>|use <编号>|test [编号]|list]",
                 true,
             ),
         }
@@ -1650,14 +1779,22 @@ impl App {
                 Some((token_start, path_candidates(&token)))
             }
             [cmd] if cmd.eq_ignore_ascii_case("/et") => {
-                let candidates = ["status", "on", "off", "add", "list", "remove"]
-                    .iter()
-                    .filter(|sub| sub.starts_with(&token_lower))
-                    .map(|sub| sub.to_string())
-                    .collect();
+                let candidates = [
+                    "status", "on", "off", "add", "list", "remove", "use", "test",
+                ]
+                .iter()
+                .filter(|sub| sub.starts_with(&token_lower))
+                .map(|sub| sub.to_string())
+                .collect();
                 Some((token_start, candidates))
             }
-            [cmd, sub] if cmd.eq_ignore_ascii_case("/et") && sub.eq_ignore_ascii_case("remove") => {
+            [cmd, sub]
+                if cmd.eq_ignore_ascii_case("/et")
+                    && (sub.eq_ignore_ascii_case("remove")
+                        || sub.eq_ignore_ascii_case("use")
+                        || sub.eq_ignore_ascii_case("select")
+                        || sub.eq_ignore_ascii_case("test")) =>
+            {
                 let candidates = self
                     .config_nodes
                     .iter()
@@ -3714,12 +3851,7 @@ impl LobbyApp {
                         self.set_status("先选择一个频道", true);
                         return None;
                     };
-                    let room_nodes = rooms::load(&self.dirs, &group.id)
-                        .ok()
-                        .flatten()
-                        .map(|room| room.et_nodes)
-                        .unwrap_or_default();
-                    if self.config.easytier.nodes.is_empty() && room_nodes.is_empty() {
+                    if self.config.easytier.nodes.is_empty() {
                         self.set_status("还没有 EasyTier 节点，按 n 添加", true);
                         return None;
                     }
@@ -3732,12 +3864,6 @@ impl LobbyApp {
                         return None;
                     }
                     self.et_enabled.insert(group.id.clone(), enabled);
-                    if enabled && room_nodes.is_empty() {
-                        if let Ok(Some(mut room)) = rooms::load(&self.dirs, &group.id) {
-                            room.et_nodes = self.config.easytier.nodes.clone();
-                            let _ = rooms::save(&self.dirs, &room);
-                        }
-                    }
                     self.set_status(
                         format!(
                             "已{}「{}」的 EasyTier 内网穿透（进入频道后生效）",
@@ -3794,6 +3920,14 @@ impl LobbyApp {
                                     if !existing.et_nodes.iter().any(|item| item == node) {
                                         existing.et_nodes.push(node.clone());
                                     }
+                                }
+                                let mut config = self.config.clone();
+                                let mut pool =
+                                    crate::easytier::normalize_nodes(config.easytier.nodes.iter());
+                                if crate::easytier::merge_pool(&mut pool, &parsed.et_nodes) {
+                                    config.easytier.nodes = pool;
+                                    let _ = config.save(&config::config_path(&self.dirs));
+                                    self.config.easytier.nodes = config.easytier.nodes.clone();
                                 }
                                 match rooms::save(&self.dirs, &existing) {
                                     Ok(()) => {
@@ -3918,11 +4052,11 @@ impl LobbyApp {
                         }
                     }
                     if let Some(group) = self.groups.get(self.index).cloned() {
-                        if let Ok(Some(mut room)) = rooms::load(&self.dirs, &group.id) {
-                            if !room.et_nodes.contains(&url) {
-                                room.et_nodes.push(url.clone());
-                                let _ = rooms::save(&self.dirs, &room);
-                            }
+                        let path = config::group_path(&self.dirs, &group.id);
+                        let mut profile = config::GroupProfile::load_at(&path).unwrap_or_default();
+                        if profile.et_node.is_none() {
+                            profile.et_node = Some(url.clone());
+                            let _ = profile.save_at(&path);
                         }
                     }
                     self.mode = LobbyMode::List;

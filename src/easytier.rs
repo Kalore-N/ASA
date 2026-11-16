@@ -101,6 +101,119 @@ pub fn normalize_node(text: &str) -> Result<String> {
     Ok(format!("{scheme}://{host}:{}", port.unwrap()))
 }
 
+/// 规范化并去重一组节点地址，忽略无效项。
+pub fn normalize_nodes<'a, I>(nodes: I) -> Vec<String>
+where
+    I: IntoIterator<Item = &'a String>,
+{
+    let mut out = Vec::new();
+    for node in nodes {
+        if let Ok(node) = normalize_node(node) {
+            if !out.contains(&node) {
+                out.push(node);
+            }
+        }
+    }
+    out
+}
+
+/// 把 `extra` 中合法的节点并入节点池；返回是否有新增。
+pub fn merge_pool(pool: &mut Vec<String>, extra: &[String]) -> bool {
+    let mut changed = false;
+    for node in extra {
+        if let Ok(node) = normalize_node(node) {
+            if !pool.contains(&node) {
+                pool.push(node);
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+/// 当前频道实际使用的节点：优先 `preferred`，否则用池中第一个。
+pub fn selected_node(pool: &[String], preferred: Option<&str>) -> Option<String> {
+    let preferred = preferred.and_then(|node| normalize_node(node).ok());
+    preferred
+        .filter(|node| pool.iter().any(|item| item == node))
+        .or_else(|| pool.first().cloned())
+}
+
+/// 一个节点的连通性探测结果。
+#[derive(Clone, Debug)]
+pub struct NodeProbe {
+    pub ok: bool,
+    pub latency_ms: Option<u128>,
+    pub detail: String,
+}
+
+/// 用 TCP 连接测试节点是否可达（tcp/ws/wss/faketcp）。
+///
+/// udp/quic 无法用 TCP 握手判断，这里只做 DNS 解析检查。
+pub fn probe_node(node: &str, timeout: Duration) -> NodeProbe {
+    use std::net::{TcpStream, ToSocketAddrs};
+
+    let normalized = match normalize_node(node) {
+        Ok(node) => node,
+        Err(err) => {
+            return NodeProbe {
+                ok: false,
+                latency_ms: None,
+                detail: err.to_string(),
+            }
+        }
+    };
+    let (scheme, authority) = normalized
+        .split_once("://")
+        .map(|(scheme, rest)| (scheme, rest.trim_end_matches('/')))
+        .unwrap_or(("tcp", normalized.as_str()));
+
+    let tcp_probe = matches!(scheme, "tcp" | "ws" | "wss" | "faketcp");
+    let addrs: Vec<std::net::SocketAddr> = match authority.to_socket_addrs() {
+        Ok(addrs) => addrs.collect(),
+        Err(err) => {
+            return NodeProbe {
+                ok: false,
+                latency_ms: None,
+                detail: format!("DNS 解析失败: {err}"),
+            }
+        }
+    };
+    if addrs.is_empty() {
+        return NodeProbe {
+            ok: false,
+            latency_ms: None,
+            detail: "没有解析到地址".to_string(),
+        };
+    }
+    if !tcp_probe {
+        return NodeProbe {
+            ok: true,
+            latency_ms: None,
+            detail: format!("{scheme} 节点：DNS 解析正常（TCP 探测不适用）"),
+        };
+    }
+    let mut last_error = String::new();
+    for addr in addrs {
+        let started = Instant::now();
+        match TcpStream::connect_timeout(&addr, timeout) {
+            Ok(_) => {
+                return NodeProbe {
+                    ok: true,
+                    latency_ms: Some(started.elapsed().as_millis()),
+                    detail: format!("TCP 连接成功（{addr}）"),
+                }
+            }
+            Err(err) => last_error = format!("{addr}: {err}"),
+        }
+    }
+    NodeProbe {
+        ok: false,
+        latency_ms: None,
+        detail: last_error,
+    }
+}
+
 /// 从频道密钥派生 EasyTier 网络名与密钥。
 ///
 /// 邀请码里已经包含频道密钥，所以加入方不需要额外传递 EasyTier 配置；
@@ -442,5 +555,58 @@ mod tests {
         let text = config_toml("a\"b", "n\\e", "s\"x", Ipv4Addr::new(10, 144, 1, 2), &[]);
         assert!(text.contains("instance_name = \"a\\\"b\""));
         assert!(text.contains("network_name = \"n\\\\e\""));
+    }
+}
+
+#[cfg(test)]
+mod node_tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_and_dedups_nodes() {
+        let nodes = vec![
+            "tcp://a.example:11010/".to_string(),
+            "tcp://a.example:11010".to_string(),
+            "bad node".to_string(),
+            "udp://b.example:11010".to_string(),
+        ];
+        let pool = normalize_nodes(nodes.iter());
+        assert_eq!(
+            pool,
+            vec![
+                "tcp://a.example:11010".to_string(),
+                "udp://b.example:11010".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn selected_node_prefers_valid_channel_choice() {
+        let pool = vec![
+            "tcp://a.example:11010".to_string(),
+            "tcp://b.example:11010".to_string(),
+        ];
+        assert_eq!(
+            selected_node(&pool, Some("tcp://b.example:11010")).as_deref(),
+            Some("tcp://b.example:11010")
+        );
+        assert_eq!(
+            selected_node(&pool, Some("tcp://missing.example:11010")).as_deref(),
+            Some("tcp://a.example:11010")
+        );
+        assert_eq!(selected_node(&[], None), None);
+    }
+
+    #[test]
+    fn probes_a_local_tcp_listener() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let accept = std::thread::spawn(move || {
+            let _ = listener.accept();
+        });
+        let probe = probe_node(&format!("tcp://127.0.0.1:{port}"), Duration::from_secs(2));
+        assert!(probe.ok, "{}", probe.detail);
+        assert!(probe.latency_ms.is_some());
+        accept.join().unwrap();
     }
 }

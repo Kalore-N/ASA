@@ -20,6 +20,9 @@ object NativeBridge {
     external fun renameGroup(dataDir: String, roomId: String, name: String): String
     external fun deleteGroup(dataDir: String, roomId: String, purgeLogs: Boolean): String
     external fun setEasytierEnabled(dataDir: String, roomId: String, enabled: Boolean): String
+    external fun etSelected(dataDir: String, roomId: String): String
+    external fun setEtNode(dataDir: String, roomId: String, node: String): String
+    external fun removeEtNode(dataDir: String, node: String): String
     external fun discoverChannels(timeoutMs: Int): String
     external fun joinDiscoveredChannel(
         dataDir: String,

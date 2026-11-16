@@ -27,6 +27,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -70,6 +71,10 @@ private val FieldShape = RoundedCornerShape(6.dp)
 fun SettingsScreen(
     context: Context,
     config: AppConfig,
+    roomId: String,
+    etSelected: String,
+    onSelectEtNode: (String) -> Unit,
+    onRemoveEtNode: (String) -> Unit,
     onSave: (AppConfig) -> Unit,
     onBack: () -> Unit,
 ) {
@@ -83,11 +88,29 @@ fun SettingsScreen(
     var relays by remember { mutableStateOf(config.relays.joinToString("\n")) }
     var etNodes by remember { mutableStateOf(EasytierStore.load(context)) }
     var etInput by remember { mutableStateOf("") }
+    var etProbing by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var etProbeResults by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    val etEffectiveSelected = etSelected.ifBlank { etNodes.firstOrNull().orEmpty() }
+    val scope = rememberCoroutineScope()
+
+    fun probeNode(node: String) {
+        if (node in etProbing) return
+        etProbing = etProbing + node
+        scope.launch {
+            val result = withContext(Dispatchers.IO) { EasytierStore.probe(node) }
+            etProbeResults = etProbeResults + (
+                node to result.fold(
+                    onSuccess = { "通 · $it ms" },
+                    onFailure = { "不通 · ${it.message ?: "未知错误"}" },
+                )
+                )
+            etProbing = etProbing - node
+        }
+    }
     var voiceEnabled by remember { mutableStateOf(config.voiceEnabled) }
     var voicePushToTalk by remember { mutableStateOf(config.voicePushToTalk) }
     var voiceRecordDir by remember { mutableStateOf(config.voiceRecordDir) }
     val clipboard = LocalClipboardManager.current
-    val scope = rememberCoroutineScope()
     val effectivePath = downloadDir.ifBlank { ConfigStore.defaultDownloadDir(context) }
     val packageInfo = remember {
         runCatching { context.packageManager.getPackageInfo(context.packageName, 0) }.getOrNull()
@@ -302,26 +325,78 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
+                if (roomId.isBlank()) {
+                    Text(
+                        "进入频道后，可在这里选择本频道使用的节点。",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 etNodes.forEach { node ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            node,
-                            modifier = Modifier.weight(1f),
-                            fontSize = 12.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
+                        RadioButton(
+                            selected = etEffectiveSelected == node,
+                            onClick = {
+                                if (roomId.isNotBlank()) onSelectEtNode(node)
+                            },
+                            enabled = roomId.isNotBlank(),
                         )
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                node,
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            val result = etProbeResults[node]
+                            if (result != null) {
+                                Text(
+                                    result,
+                                    fontSize = 11.sp,
+                                    color = if (result.startsWith("通")) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.error
+                                    },
+                                )
+                            }
+                        }
+                        TextButton(
+                            onClick = { probeNode(node) },
+                            enabled = node !in etProbing,
+                        ) {
+                            Text(if (node in etProbing) "测试中…" else "测试", fontSize = 12.sp)
+                        }
                         IconButton(onClick = {
-                            EasytierStore.remove(context, node)
+                            onRemoveEtNode(node)
                             etNodes = EasytierStore.load(context)
+                            etProbeResults = etProbeResults - node
                         }) {
                             Icon(Icons.Filled.Delete, contentDescription = "删除节点")
                         }
                     }
                 }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { etNodes.forEach { probeNode(it) } },
+                        shape = FieldShape,
+                        enabled = etNodes.any { it !in etProbing },
+                    ) { Text("测试全部", fontSize = 12.sp) }
+                    if (etProbing.isNotEmpty()) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    }
+                }
+                Text(
+                    "节点按频道保存选择，改动在重新进入频道后生效；删除会同时清理旧频道里的残留配置。",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),

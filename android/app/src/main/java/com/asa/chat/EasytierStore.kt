@@ -81,6 +81,44 @@ object EasytierStore {
         file.writeText(root.toString(2))
     }
 
+    /** 用 TCP 连接测试节点；返回毫秒延迟。udp/quic 无法用 TCP 握手判断。 */
+    fun probe(node: String, timeoutMs: Int = 2500): Result<Long> = runCatching {
+        val value = node.trim()
+        if (!isValidNode(value)) error("节点地址无效")
+        val scheme = if (value.contains("://")) {
+            value.substringBefore("://").lowercase()
+        } else {
+            "tcp"
+        }
+        if (scheme !in setOf("tcp", "ws", "wss", "faketcp")) {
+            error("$scheme 节点不支持 TCP 探测")
+        }
+        val rest = if (value.contains("://")) {
+            value.substringAfter("://").trimEnd('/')
+        } else {
+            value
+        }
+        val host: String
+        val port: Int
+        if (rest.startsWith("[")) {
+            val end = rest.indexOf(']')
+            if (end <= 0) error("IPv6 地址格式错误")
+            host = rest.substring(1, end)
+            port = rest.substring(end + 1).removePrefix(":").toIntOrNull()
+                ?: error("端口无效")
+        } else {
+            val index = rest.lastIndexOf(':')
+            if (index <= 0) error("节点缺少端口")
+            host = rest.substring(0, index)
+            port = rest.substring(index + 1).toIntOrNull() ?: error("端口无效")
+        }
+        val started = System.nanoTime()
+        java.net.Socket().use { socket ->
+            socket.connect(java.net.InetSocketAddress(host, port), timeoutMs)
+        }
+        (System.nanoTime() - started) / 1_000_000
+    }
+
     /** 从 qtet 监控页抓取未打码节点。只做纯文本正则提取，不执行页面脚本。 */
     fun fetchQtetNodes(): Result<List<String>> = runCatching {
         val connection = (URL(QTET_URL).openConnection() as HttpURLConnection).apply {

@@ -109,6 +109,7 @@ data class UiState(
     val easytierEnabled: Boolean = false,
     val easytierIp: String? = null,
     val easytierError: String? = null,
+    val etSelectedNode: String = "",
     val lanChannels: List<LanChannel> = emptyList(),
     val lanLoading: Boolean = false,
     val call: CallState = CallState(),

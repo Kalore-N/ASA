@@ -11,7 +11,7 @@ use asa::config::{Config, GroupProfile};
 use asa::easytier::{self, EtProcess, EtStatus};
 use asa::lan::JoinServer;
 use asa::node::{Node, NodeConfig};
-use asa::paths::{self, RuntimeDirs};
+use asa::paths::RuntimeDirs;
 use asa::room::{self, RoomConfig};
 use asa::settings::Settings;
 use asa::tui::{self, TuiAction, UiConfig};
@@ -40,7 +40,7 @@ ASA · 去中心化 TUI 频道
   --port <端口>        TCP 监听端口，默认 7777
   --connect <地址>     手动连接成员，可重复，如 --connect 192.168.1.8:7777
   --no-mdns            关闭局域网自动发现
-  --data-dir <路径>    数据目录，默认 ~/Documents/ASA
+  --data-dir <路径>    数据目录（默认 ~/.config/asa；指定后使用 <路径>/runtime）
   --max-file-mb <MB>   单文件上限，默认 100，0 表示不限制
   --auto-accept        自动接受所有文件请求（有风险，慎用）
   --room <群ID>        指定要进入的本地频道（默认最近使用）
@@ -90,11 +90,12 @@ fn real_main() -> Result<()> {
         return Ok(());
     }
 
-    let root = match &opts.data_root {
-        Some(path) => path.clone(),
-        None => paths::default_root()?,
+    let dirs = match &opts.data_root {
+        // 显式 --data-dir 保留自包含的 <dir>/runtime 布局（便携包/测试）。
+        Some(path) => RuntimeDirs::ensure(path)?,
+        // 默认使用 XDG 标准位置：~/.config/asa + ~/Downloads。
+        None => RuntimeDirs::standard()?,
     };
-    let dirs = RuntimeDirs::ensure(&root)?;
     let mut config = Config::ensure(&dirs)?;
     let settings = Settings::load(&dirs.settings_path()).unwrap_or_default();
     let mut opts = opts;
@@ -148,6 +149,9 @@ fn real_main() -> Result<()> {
         "invite" => {
             let mut room = load_room(&dirs, &opts)?;
             merge_relays(&mut room, &config);
+            let mut pool = easytier::normalize_nodes(config.easytier.nodes.iter());
+            easytier::merge_pool(&mut pool, &room.et_nodes);
+            room.et_nodes = pool;
             let addr = SocketAddr::new(util::lan_ipv4(), opts.port());
             println!("{}", room.invite(Some(addr)));
             Ok(())
@@ -305,6 +309,7 @@ fn real_main() -> Result<()> {
                 .clone()
                 .ok_or_else(|| anyhow!("用法: asa join <邀请码>"))?;
             let (parsed, addresses) = RoomConfig::parse_invite_full(&text)?;
+            let invite_et_nodes = parsed.et_nodes.clone();
             let room = match asa::rooms::load(&dirs, &parsed.id)? {
                 Some(mut existing) => {
                     for entry in &parsed.entries {
@@ -330,14 +335,23 @@ fn real_main() -> Result<()> {
                     parsed
                 }
             };
-            // 邀请码携带的 EasyTier 节点写入频道配置；首次加入时默认开启。
-            if !room.et_nodes.is_empty() {
+            // 邀请码携带的 EasyTier 节点并入全局节点池；首次加入时默认开启。
+            if !invite_et_nodes.is_empty() {
+                let mut config = Config::ensure(&dirs)?;
+                let mut pool = easytier::normalize_nodes(config.easytier.nodes.iter());
+                if easytier::merge_pool(&mut pool, &invite_et_nodes) {
+                    config.easytier.nodes = pool.clone();
+                    config.save(&asa::config::config_path(&dirs))?;
+                }
                 let path = asa::config::group_path(&dirs, &room.id);
                 let mut profile = GroupProfile::load_at(&path).unwrap_or_default();
                 if profile.easytier_enabled.is_none() {
                     profile.easytier_enabled = Some(true);
-                    profile.save_at(&path)?;
                 }
+                if profile.et_node.is_none() {
+                    profile.et_node = easytier::selected_node(&pool, None);
+                }
+                profile.save_at(&path)?;
             }
             let (identity, saved_nick) = Identity::load_or_create(&dirs.identity_path())?;
             let nick = opts
@@ -427,6 +441,11 @@ fn run_chat(
     let mut room = room;
     let mut bootstrap = bootstrap;
     loop {
+        // 每轮重新读取配置：/et add、/et remove 之后重启频道要立刻生效。
+        let config = match Config::ensure(&dirs) {
+            Ok(config) => config,
+            Err(_) => config.clone(),
+        };
         let mut profile = GroupProfile::load(&dirs, &room.id).unwrap_or_default();
         let nick = opts
             .name
@@ -437,7 +456,7 @@ fn run_chat(
             profile.nick = Some(nick.clone());
             let _ = profile.save(&dirs, &room.id);
         }
-        let downloads = profile.download_dir(config, &dirs);
+        let downloads = profile.download_dir(&config, &dirs);
         let max_file = opts
             .max_file_mb
             .map(|mb| {
@@ -447,8 +466,8 @@ fn run_chat(
                     mb.saturating_mul(1024 * 1024)
                 }
             })
-            .unwrap_or_else(|| profile.max_file(config));
-        let auto_accept = opts.auto_accept || profile.auto_accept(config);
+            .unwrap_or_else(|| profile.max_file(&config));
+        let auto_accept = opts.auto_accept || profile.auto_accept(&config);
         let mut relays = config.network.relays.clone();
         for relay in &room.relays {
             if !relays.iter().any(|item| item == relay) {
@@ -468,45 +487,44 @@ fn run_chat(
 
         let mut et_status = EtStatus::default();
         let mut et_process = None;
-        let mut selected_nodes: Vec<String> = Vec::new();
         let mut extra_entries: Vec<String> = Vec::new();
 
-        let auto_easytier = !room.et_nodes.is_empty()
-            || (config.easytier.auto_enable && !config.easytier.nodes.is_empty());
+        // 节点池以全局配置为准，兼容旧版频道里保存的节点。
+        let mut et_pool = easytier::normalize_nodes(config.easytier.nodes.iter());
+        if easytier::merge_pool(&mut et_pool, &room.et_nodes) {
+            let mut saved = config.clone();
+            saved.easytier.nodes = et_pool.clone();
+            let _ = saved.save(&asa::config::config_path(&dirs));
+        }
+        let selected_node = easytier::selected_node(&et_pool, profile.et_node.as_deref());
+        if profile.et_node.as_deref() != selected_node.as_deref() {
+            profile.et_node = selected_node.clone();
+            let _ = profile.save(&dirs, &room.id);
+        }
+        let auto_easytier = config.easytier.auto_enable && !et_pool.is_empty();
         if profile.easytier_enabled.unwrap_or(auto_easytier) {
-            let mut nodes = room.et_nodes.clone();
-            if nodes.is_empty() {
-                nodes = config.easytier.nodes.clone();
-            }
-            for node in nodes {
-                if let Ok(node) = easytier::normalize_node(&node) {
-                    if !selected_nodes.contains(&node) {
-                        selected_nodes.push(node);
-                    }
+            match selected_node.clone() {
+                None => {
+                    et_status.error =
+                        Some("已开启 EasyTier，但没有可用节点；请先 /et add <地址>".to_string());
                 }
-            }
-            if selected_nodes.is_empty() {
-                et_status.error = Some("已开启 EasyTier，但没有可用节点；请先添加节点".to_string());
-            } else {
-                match EtProcess::start(&dirs, &room, &pubkey, &selected_nodes) {
+                Some(node) => match EtProcess::start(&dirs, &room, &pubkey, &[node]) {
                     Ok(process) => {
                         advertise = Some(SocketAddr::new(process.ip.into(), opts.port()));
                         et_status.running = true;
                         et_status.ip = Some(process.ip);
                         // 邀请码同时保留局域网入口，ET 不可用时仍可回退。
                         extra_entries.push(format!("{}:{}", util::lan_ipv4(), opts.port()));
-                        room.et_nodes = selected_nodes.clone();
-                        let _ = asa::rooms::save(&dirs, &room);
                         et_process = Some(process);
                     }
                     Err(err) => {
                         // 回退到局域网/中继，不阻塞进入频道。
                         et_status.error = Some(err.to_string());
                     }
-                }
+                },
             }
         }
-        et_status.nodes = selected_nodes.clone();
+        et_status.nodes = selected_node.iter().cloned().collect();
 
         let cfg = NodeConfig {
             signing: identity.signing.clone(),
@@ -520,15 +538,7 @@ fn run_chat(
             bind,
             advertise,
             extra_entries,
-            invite_et_nodes: {
-                let mut nodes = room.et_nodes.clone();
-                for node in &selected_nodes {
-                    if !nodes.contains(node) {
-                        nodes.push(node.clone());
-                    }
-                }
-                nodes
-            },
+            invite_et_nodes: et_pool.clone(),
             dirs: dirs.clone(),
             identity_path: dirs.identity_path(),
             downloads,
@@ -574,7 +584,7 @@ fn run_chat(
             group_path: asa::config::group_path(&dirs, &room.id),
             groups: asa::rooms::list(&dirs).unwrap_or_default(),
             easytier: et_status,
-            config_nodes: config.easytier.nodes.clone(),
+            config_nodes: et_pool.clone(),
             dirs: dirs.clone(),
             vim_mode: config.ui.vim_mode,
             scroll_step: config.ui.scroll_step,
@@ -677,7 +687,13 @@ fn parse_args(args: Vec<String>) -> Result<Opts> {
                 opts.port = Some(port);
             }
             "--connect" | "-c" => opts.connect.push(value("--connect")?),
-            "--data-dir" => opts.data_root = Some(PathBuf::from(value("--data-dir")?)),
+            "--data-dir" => {
+                let raw = value("--data-dir")?;
+                if raw.trim().is_empty() {
+                    return Err(anyhow!("--data-dir 不能为空"));
+                }
+                opts.data_root = Some(PathBuf::from(raw));
+            }
             "--max-file-mb" => {
                 let raw = value("--max-file-mb")?;
                 let mb: u64 = raw

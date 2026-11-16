@@ -82,6 +82,10 @@ class MainActivity : ComponentActivity() {
                     SettingsScreen(
                         context = activity,
                         config = config,
+                        roomId = state.roomId,
+                        etSelected = state.etSelectedNode,
+                        onSelectEtNode = { node -> vm.selectEtNode(node) },
+                        onRemoveEtNode = { node -> vm.removeEtNode(node) },
                         onSave = { updated ->
                             ConfigStore.save(activity, updated)
                             config = updated
