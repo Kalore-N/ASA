@@ -8,6 +8,7 @@ import android.util.Log
 import com.easytier.jni.EasyTierJNI
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -113,6 +114,22 @@ object EasyTierController {
             Log.e(TAG, "start failed", t)
             false
         }
+    }
+
+    /** 等待 VpnService 真正把 TUN fd 交给 EasyTier。 */
+    suspend fun waitForTun(timeoutMs: Long = 6_000): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            val status = AsaVpnService.status
+            if (status.contains("TUN 已连接")) return true
+            if (!running) {
+                lastError = status
+                return false
+            }
+            delay(200)
+        }
+        lastError = "EasyTier TUN 未就绪：${AsaVpnService.status}"
+        return false
     }
 
     /** VPN 被系统撤销或服务销毁时同步运行时状态。 */

@@ -84,8 +84,12 @@ class MainActivity : ComponentActivity() {
                         config = config,
                         roomId = state.roomId,
                         etSelected = state.etSelectedNode,
+                        etEnabled = state.easytierEnabled,
+                        etIp = state.easytierIp,
+                        etError = state.easytierError,
                         onSelectEtNode = { node -> vm.selectEtNode(node) },
                         onRemoveEtNode = { node -> vm.removeEtNode(node) },
+                        onRestartChannel = { vm.restartChannel() },
                         onSave = { updated ->
                             ConfigStore.save(activity, updated)
                             config = updated

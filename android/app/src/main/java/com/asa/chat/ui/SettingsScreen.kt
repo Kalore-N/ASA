@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.pm.PackageInfoCompat
 import com.asa.chat.AppConfig
+import com.asa.chat.AsaVpnService
 import com.asa.chat.ConfigStore
 import com.asa.chat.EasytierStore
 import com.asa.chat.NativeBridge
@@ -73,8 +74,12 @@ fun SettingsScreen(
     config: AppConfig,
     roomId: String,
     etSelected: String,
+    etEnabled: Boolean,
+    etIp: String?,
+    etError: String?,
     onSelectEtNode: (String) -> Unit,
     onRemoveEtNode: (String) -> Unit,
+    onRestartChannel: () -> Unit,
     onSave: (AppConfig) -> Unit,
     onBack: () -> Unit,
 ) {
@@ -313,6 +318,24 @@ fun SettingsScreen(
 
             HorizontalDivider()
             Text("EasyTier 内网穿透", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp)
+            if (roomId.isNotBlank()) {
+                val etStatus = when {
+                    !etEnabled -> "未开启"
+                    etIp != null -> "运行中 · 虚拟 IP $etIp"
+                    etError != null -> "异常：$etError"
+                    else -> "已开启，等待启动"
+                }
+                Text("EasyTier 状态：$etStatus", fontSize = 12.sp)
+                Text(
+                    "VPN：${AsaVpnService.status}",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedButton(
+                    onClick = onRestartChannel,
+                    shape = FieldShape,
+                ) { Text("重新连接频道", fontSize = 12.sp) }
+            }
             Text(
                 "节点地址只用于发现同一个 EasyTier 网络；网络名和密钥由频道密钥派生。",
                 fontSize = 12.sp,

@@ -161,9 +161,8 @@ fn start_node(config_json: &str) -> Result<serde_json::Value> {
                 if profile.et_node.is_none() {
                     profile.et_node = crate::easytier::selected_node(&pool, None);
                 }
-                if profile.easytier_enabled.is_none() {
-                    profile.easytier_enabled = Some(true);
-                }
+                // 邀请码带 ET 节点时强制开启，避免旧频道设置导致异地连接失败。
+                profile.easytier_enabled = Some(true);
                 let _ = profile.save_at(&path);
             }
             room

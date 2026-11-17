@@ -1,6 +1,6 @@
 .\" 中文排版不适合两端对齐
 .ds AD l
-.TH ASA 1 "2026-11-15" "asa 1.7.4" "用户命令"
+.TH ASA 1 "2026-11-15" "asa 1.7.5" "用户命令"
 .nh
 .SH NAME
 asa \- 去中心化 TUI 群聊工具
@@ -346,6 +346,16 @@ Linux 需要给
 .BR setcap ）；
 Windows 需要以管理员身份运行；Android 使用 VpnService。
 EasyTier 启动失败时会回退到局域网/中继，不阻塞聊天。
+.PP
+TUI 在缺少 TUN 权限时提示
+.BR y/o/n ：
+y 通过
+.B pkexec setcap
+提权并记住，o 仅本次，n 不再提示。选择写入
+.B easytier.auto_elevate
+与
+.BR easytier.elevate_prompted ；
+把后者改回 false 可重新提示，前者为 true 时以后自动提权。
 .PP
 Android 同一用户同时只能有一个 VpnService。ASA 使用 per-app VPN，
 只影响 ASA 自身；但会替换其他 VpnService。需要同时运行两个 VPN 时，

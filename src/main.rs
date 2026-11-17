@@ -345,9 +345,7 @@ fn real_main() -> Result<()> {
                 }
                 let path = asa::config::group_path(&dirs, &room.id);
                 let mut profile = GroupProfile::load_at(&path).unwrap_or_default();
-                if profile.easytier_enabled.is_none() {
-                    profile.easytier_enabled = Some(true);
-                }
+                profile.easytier_enabled = Some(true);
                 if profile.et_node.is_none() {
                     profile.et_node = easytier::selected_node(&pool, None);
                 }

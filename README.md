@@ -2,7 +2,7 @@
 
 这是我第一次尝试vibe coding的产物，随便写了点小东西玩玩
 
-当前版本：**1.7.4**
+当前版本：**1.7.5**
 
 ASA 是一个用 Rust 编写的**完全去中心化**终端频道工具：没有中心服务器，每个参与者都是对等节点。支持局域网自动发现、跨网手动连接、端到端加密、本地聊天记录（JSONL）以及文件传输。
 
@@ -158,6 +158,10 @@ EasyTier 是**可选**的。没有节点、没有权限或启动失败时，ASA 
   `sudo setcap cap_net_admin,cap_net_raw+ep ./easytier-core`
 - 如果 `/et status` 显示 `Operation not permitted`，就是缺少上面的 TUN 权限；
   此时节点测试可能显示“通”，但 EasyTier 仍然无法建立虚拟网络
+- TUI 在缺少 TUN 权限时会提示：`y` 提权并记住、`o` 仅本次、`n` 不再提示；
+  确认后通过 `pkexec setcap` 弹出系统授权窗口（需要 polkit 图形代理）。
+  选择会写入 `easytier.auto_elevate` / `elevate_prompted`；把 `elevate_prompted`
+  改回 false 可重新看到提示，`auto_elevate=true` 则以后直接自动提权
 - **Windows**：需要以管理员身份运行 `asa.exe`，EasyTier 才能创建 TUN 网卡
 - **Android**：使用 VpnService，不需要 root；首次开启会弹出系统 VPN 授权
 
@@ -293,6 +297,8 @@ asa import <文件>               导入群文件
 - `sync.count`：每次请求的条数，默认 50；设为 0 表示全部（最多 5000 条）。同步会从**本地全部 JSONL 历史**中取记录，并写入本地日志、按原时间插入界面；可用 `/sync` 手动触发。
 - `easytier.nodes`：本机保存的 EasyTier 节点池，默认空；每个频道用群配置里的 `et_node` 选择其中一个，为空时用池中第一个。
 - `easytier.auto_enable`：有新节点时，新频道默认开启 EasyTier，默认 true。
+- `easytier.auto_elevate`：缺少 TUN 权限时是否自动用 `pkexec setcap` 提权，默认 false。
+- `easytier.elevate_prompted`：是否已经提示过提权；设为 false 可再次看到提示，默认 false。
 - `voice.enabled`：启用语音通话和语音消息。
 - `voice.codec` / `sample_rate` / `channels` / `frame_ms`：目前固定 PCM 16kHz 单声道，20ms/帧。
 - `voice.push_to_talk`：TUI 使用按住说话；false 为全双工。
@@ -528,25 +534,25 @@ GitHub Releases 提供各平台的可运行产物；源码仓库不包含构建�
 
 | 平台 | 文件 | 说明 |
 | --- | --- | --- |
-| Linux x86-64 | `asa-1.7.4-linux-x86_64.tar.gz` | 含 `asa`、`easytier-core`、`easytier-cli` |
-| Windows x86-64 | `asa-1.7.4-windows-x86_64.zip` | 含 `asa.exe`、EasyTier、`wintun.dll` |
-| Android arm64 | `asa-1.7.4-android-arm64.apk` | 真机推荐；含 arm64 EasyTier 原生库 |
-| Android x86_64 | `asa-1.7.4-android-x86_64.apk` | 模拟器 / x86_64 平板 |
-| Arch Linux x86-64 | `asa-1.7.4-1-x86_64.pkg.tar.zst` | 含二进制、EasyTier、man、桌面入口与图标 |
-| Debian / Ubuntu amd64 | `asa_1.7.4_amd64.deb` | 含二进制、EasyTier、man、桌面入口与图标 |
-| Fedora / RHEL x86-64 | `asa-1.7.4-1.x86_64.rpm` | 含二进制、EasyTier、man、桌面入口与图标 |
+| Linux x86-64 | `asa-1.7.5-linux-x86_64.tar.gz` | 含 `asa`、`easytier-core`、`easytier-cli` |
+| Windows x86-64 | `asa-1.7.5-windows-x86_64.zip` | 含 `asa.exe`、EasyTier、`wintun.dll` |
+| Android arm64 | `asa-1.7.5-android-arm64.apk` | 真机推荐；含 arm64 EasyTier 原生库 |
+| Android x86_64 | `asa-1.7.5-android-x86_64.apk` | 模拟器 / x86_64 平板 |
+| Arch Linux x86-64 | `asa-1.7.5-1-x86_64.pkg.tar.zst` | 含二进制、EasyTier、man、桌面入口与图标 |
+| Debian / Ubuntu amd64 | `asa_1.7.5_amd64.deb` | 含二进制、EasyTier、man、桌面入口与图标 |
+| Fedora / RHEL x86-64 | `asa-1.7.5-1.x86_64.rpm` | 含二进制、EasyTier、man、桌面入口与图标 |
 
 ### Linux 发行版包
 
 ```bash
 # Arch
-sudo pacman -U asa-1.7.4-1-x86_64.pkg.tar.zst
+sudo pacman -U asa-1.7.5-1-x86_64.pkg.tar.zst
 
 # Debian / Ubuntu
-sudo apt install ./asa_1.7.4_amd64.deb
+sudo apt install ./asa_1.7.5_amd64.deb
 
 # Fedora / RHEL
-sudo dnf install ./asa-1.7.4-1.x86_64.rpm
+sudo dnf install ./asa-1.7.5-1.x86_64.rpm
 ```
 
 安装后直接运行 `asa`，或从应用菜单打开 ASA。安装包是静态二进制，不依赖系统 Rust 工具链。
@@ -578,6 +584,9 @@ Android 版说明：
   - 只在手动点击时联网，不会后台轮询
   - 发现新版可选择「下载并安装」：应用内下载 APK（带进度条），完成后调起系统安装器
   - 首次安装需允许「安装未知应用」；下载文件保存在应用私有目录
+- 设置 → EasyTier 会显示运行状态、虚拟 IP、VPN 状态和错误，可点「重新连接频道」应用节点选择
+- 异地连接排查：双方都升级到同一版本；确认邀请码带 `&et=`；在设置里测试节点是否通；
+  若状态显示 EasyTier 异常，先解决 VPN 授权/TUN，再重连频道
 - 频道列表右侧垃圾桶可删除频道，确认框可选「同时删除该频道的聊天记录」
   - 删除只影响本机，不会解散其他成员的频道
   - 删除正在连接的频道会先自动退出（停止节点与前台服务）

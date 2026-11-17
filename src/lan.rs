@@ -604,7 +604,8 @@ pub fn save_joined_channel(
     if let Some(password) = password.filter(|value| !value.is_empty()) {
         profile.join_password_enc = Some(seal_saved_password(&room.key, password)?);
     }
-    if profile.easytier_enabled.is_none() && !pool.is_empty() {
+    if !pool.is_empty() {
+        // 邀请码带 ET 节点时强制开启，避免旧设置导致异地连接失败。
         profile.easytier_enabled = Some(true);
     }
     if profile.et_node.is_none() {

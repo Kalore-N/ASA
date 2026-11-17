@@ -68,6 +68,9 @@ Ctrl+Y                把最近内容放入输入行（剪贴板不可用时的�
 语音房：浏览模式按 v 加入/退出，m 静音；语音房与 1:1 通话互斥。
 提示：直接输入文字回车即发送；PgUp/PgDn 翻看历史，End 回到底部。";
 
+/// 本次进程是否已经尝试过 EasyTier 提权，避免自动提权失败后反复重启循环。
+static ELEVATE_ATTEMPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 const HINTS: &str =
     "Enter 发送 · Tab 补全 · Ctrl+R 回复 · PgUp/PgDn 翻页 · /help 命令 · Ctrl+C 退出";
 
@@ -233,6 +236,8 @@ pub struct App {
     voice_last_send: Instant,
     /// 是否捕获鼠标；关闭后终端可拖选文本、使用系统右键菜单。
     mouse_capture: bool,
+    /// EasyTier 缺少 TUN 权限时等待用户确认的核心路径。
+    elevate_core: Option<PathBuf>,
 }
 
 struct ActiveCall {
@@ -308,10 +313,39 @@ impl App {
             voice_room_muted: false,
             voice_last_send: Instant::now(),
             mouse_capture: true,
+            elevate_core: None,
         };
         app.push_system("欢迎使用 ASA。直接输入文字回车发送；/help 查看命令；/invite 获取邀请码。");
         if let Some(err) = app.easytier.error.clone() {
             app.push_system(format!("EasyTier 未启动：{err}"));
+            if err.contains("Operation not permitted")
+                || err.contains("无法创建 TUN")
+                || err.contains("TUN 权限")
+            {
+                let config = crate::config::Config::ensure(&app.dirs).unwrap_or_default();
+                match crate::easytier::find_core() {
+                    Ok(core)
+                        if config.easytier.auto_elevate
+                            && !ELEVATE_ATTEMPTED.load(std::sync::atomic::Ordering::Relaxed) =>
+                    {
+                        app.set_status("EasyTier 需要 TUN 权限，正在打开提权窗口…", false);
+                        app.run_elevation(true, core);
+                    }
+                    Ok(core)
+                        if !config.easytier.elevate_prompted
+                            && !ELEVATE_ATTEMPTED.load(std::sync::atomic::Ordering::Relaxed) =>
+                    {
+                        app.elevate_core = Some(core);
+                        app.push_system(
+                            "EasyTier 缺少 TUN 权限：y=提权并记住 · o=仅本次 · n=不再提示\n\
+                             选择会写入 config.json 的 easytier.auto_elevate；\
+                             把 elevate_prompted 改为 false 可再次看到提示。"
+                                .to_string(),
+                        );
+                    }
+                    _ => {}
+                }
+            }
         }
         app
     }
@@ -608,6 +642,22 @@ impl App {
 
     fn on_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if let Some(core) = self.elevate_core.clone() {
+            match key.code {
+                KeyCode::Char('y') => self.run_elevation(true, core),
+                KeyCode::Char('o') => self.run_elevation(false, core),
+                KeyCode::Char('n') | KeyCode::Esc => {
+                    self.elevate_core = None;
+                    self.save_elevate_preference(false);
+                    self.set_status(
+                        "已跳过提权；可手动运行 sudo setcap cap_net_admin,cap_net_raw+ep <easytier-core>",
+                        true,
+                    );
+                }
+                _ => {}
+            }
+            return;
+        }
         if self.file_select.is_some() {
             self.on_file_select_key(key);
             return;
@@ -883,6 +933,54 @@ impl App {
         ));
         self.voice_room_audio = Some(audio);
         Ok(())
+    }
+
+    fn save_elevate_preference(&mut self, auto: bool) {
+        if let Ok(mut config) = crate::config::Config::ensure(&self.dirs) {
+            config.easytier.auto_elevate = auto;
+            config.easytier.elevate_prompted = true;
+            let _ = config.save(&crate::config::config_path(&self.dirs));
+        }
+    }
+
+    fn run_elevation(&mut self, remember: bool, core: PathBuf) {
+        self.elevate_core = None;
+        ELEVATE_ATTEMPTED.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.save_elevate_preference(remember);
+        // 先尝试 pkexec 的图形授权窗口；setcap 是一次性授予，不需要长期以 root 运行。
+        let setcap = ["/usr/bin/setcap", "/usr/sbin/setcap", "/sbin/setcap"]
+            .iter()
+            .map(PathBuf::from)
+            .find(|path| path.exists())
+            .unwrap_or_else(|| PathBuf::from("setcap"));
+        let status = std::process::Command::new("pkexec")
+            .arg(&setcap)
+            .args(["cap_net_admin,cap_net_raw+ep"])
+            .arg(&core)
+            .status();
+        match status {
+            Ok(status) if status.success() => {
+                self.push_system(format!(
+                    "已为 {} 添加 TUN 权限，正在重试 EasyTier…",
+                    core.display()
+                ));
+                self.restart_for_et();
+            }
+            Ok(status) => {
+                self.set_status(format!("提权未完成（{status}）"), true);
+                self.push_system(format!(
+                    "提权未完成。可手动执行：\nsudo setcap cap_net_admin,cap_net_raw+ep {}",
+                    core.display()
+                ));
+            }
+            Err(err) => {
+                self.set_status(format!("无法启动 pkexec: {err}"), true);
+                self.push_system(format!(
+                    "无法打开提权窗口（{err}）。请手动执行：\nsudo setcap cap_net_admin,cap_net_raw+ep {}",
+                    core.display()
+                ));
+            }
+        }
     }
 
     fn toggle_voice_room(&mut self) {
@@ -2624,6 +2722,18 @@ impl App {
     }
 
     fn draw_status(&self, frame: &mut Frame, area: Rect) {
+        if self.elevate_core.is_some() {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "EasyTier 需要 TUN 权限：y 提权并记住 · o 仅本次 · n 不再提示",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ))),
+                area,
+            );
+            return;
+        }
         if let Some(select) = &self.file_select {
             let chosen = select.selected.iter().filter(|value| **value).count();
             let text = format!(
@@ -3286,6 +3396,7 @@ mod tests {
             voice_room_muted: false,
             voice_last_send: Instant::now(),
             mouse_capture: true,
+            elevate_core: None,
             listen: "127.0.0.1:7777".parse().unwrap(),
             invite: String::new(),
             max_file: 0,

@@ -46,6 +46,12 @@ pub struct EasyTierPrefs {
     /// 新频道默认开启 EasyTier；没有节点时仍不会启动。
     #[serde(default = "default_auto_enable")]
     pub auto_enable: bool,
+    /// 缺少 TUN 权限时，是否自动用 pkexec 提权（不再询问）。
+    #[serde(default)]
+    pub auto_elevate: bool,
+    /// 是否已经询问过提权；设为 false 可再次看到提示。
+    #[serde(default)]
+    pub elevate_prompted: bool,
 }
 
 impl Default for EasyTierPrefs {
@@ -53,6 +59,8 @@ impl Default for EasyTierPrefs {
         Self {
             nodes: Vec::new(),
             auto_enable: true,
+            auto_elevate: false,
+            elevate_prompted: false,
         }
     }
 }

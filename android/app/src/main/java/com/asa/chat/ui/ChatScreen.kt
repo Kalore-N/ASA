@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -187,15 +188,19 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
                                 .clip(RoundedCornerShape(6.dp)),
                         )
                         Spacer(Modifier.size(8.dp))
-                        Column {
+                        Column(Modifier.weight(1f)) {
                             Text(
                                 state.roomName.ifBlank { "频道 ${state.roomId.take(8)}" },
-                                fontSize = 16.sp,
+                                fontSize = 15.sp,
                                 fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
                             Text(
                                 "频道 ${state.roomId.take(8)} · 在线 ${state.online} · 服主 ${state.hostNick}",
-                                fontSize = 11.sp,
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
@@ -216,12 +221,6 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
                     IconButton(onClick = { showCallPicker = true }) {
                         Icon(Icons.Filled.Call, contentDescription = "语音通话")
                     }
-                    IconButton(onClick = { showMembers = true }) {
-                        Icon(Icons.Filled.People, contentDescription = "成员")
-                    }
-                    IconButton(onClick = { showInvite = true }) {
-                        Icon(Icons.Filled.Link, contentDescription = "邀请码")
-                    }
                     Box {
                         IconButton(onClick = { showMenu = true }) {
                             Icon(Icons.Filled.MoreVert, contentDescription = "更多")
@@ -230,6 +229,20 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
                             expanded = showMenu,
                             onDismissRequest = { showMenu = false },
                         ) {
+                            DropdownMenuItem(
+                                text = { Text("在线成员") },
+                                onClick = {
+                                    showMenu = false
+                                    showMembers = true
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("邀请码") },
+                                onClick = {
+                                    showMenu = false
+                                    showInvite = true
+                                },
+                            )
                             DropdownMenuItem(
                                 text = { Text("同步聊天记录") },
                                 onClick = {
@@ -343,21 +356,47 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
             }
         },
     ) { padding ->
-        LazyColumn(
-            state = listState,
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
+                .fillMaxSize()
                 .padding(padding),
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            items(state.messages, key = { it.key }) { message ->
-                MessageRow(
-                    message = message,
-                    playingVoice = state.playingVoice,
-                    onReply = { vm.setReply(message) },
-                    onPlayVoice = vm::playVoice,
-                )
+            if (state.easytierEnabled && state.easytierError != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.errorContainer)
+                        .clickable { onOpenSettings() }
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "EasyTier 未连接：${state.easytierError}",
+                        modifier = Modifier.weight(1f),
+                        fontSize = 11.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                    TextButton(onClick = { vm.restartChannel() }) { Text("重连", fontSize = 12.sp) }
+                }
+            }
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(state.messages, key = { it.key }) { message ->
+                    MessageRow(
+                        message = message,
+                        playingVoice = state.playingVoice,
+                        onReply = { vm.setReply(message) },
+                        onPlayVoice = vm::playVoice,
+                    )
+                }
             }
         }
     }

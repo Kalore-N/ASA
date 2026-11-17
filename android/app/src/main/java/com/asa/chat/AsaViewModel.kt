@@ -370,9 +370,13 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                         etError = EasyTierController.lastError ?: "EasyTier 启动失败"
                         EasyTierController.stop(app)
                         android.util.Log.w("AsaEasyTier", "controller start failed: $etError")
+                    } else if (!EasyTierController.waitForTun()) {
+                        etError = EasyTierController.lastError ?: "EasyTier TUN 未就绪"
+                        EasyTierController.stop(app)
+                        android.util.Log.w("AsaEasyTier", "tun not ready: $etError")
                     } else {
-                        // 等 TUN 建立，再用虚拟 IP 重启 ASA 节点。
-                        Thread.sleep(1500)
+                        // TUN 已就绪，再用虚拟 IP 重启 ASA 节点。
+                        Thread.sleep(300)
                         val restart = JSONObject(config).apply {
                             put("mode", "chat")
                             put("room_id", obj.optString("room_id"))
@@ -1039,6 +1043,14 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                 _state.update { it.copy(error = message) }
             }
         }
+    }
+
+    /** 重新连接当前频道（用于应用 EasyTier 节点/VPN 改动）。 */
+    fun restartChannel() {
+        val roomId = _state.value.roomId
+        if (roomId.isBlank() || _state.value.connecting) return
+        stop()
+        enterGroup(roomId)
     }
 
     /** 选择当前频道使用的 EasyTier 节点（重新进入频道后生效）。 */
