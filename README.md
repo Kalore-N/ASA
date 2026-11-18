@@ -2,7 +2,7 @@
 
 这是我第一次尝试vibe coding的产物，随便写了点小东西玩玩
 
-当前版本：**1.7.7**
+当前版本：**1.7.8**
 
 ASA 是一个用 Rust 编写的**完全去中心化**终端频道工具：没有中心服务器，每个参与者都是对等节点。支持局域网自动发现、跨网手动连接、端到端加密、本地聊天记录（JSONL）以及文件传输。
 
@@ -534,25 +534,25 @@ GitHub Releases 提供各平台的可运行产物；源码仓库不包含构建�
 
 | 平台 | 文件 | 说明 |
 | --- | --- | --- |
-| Linux x86-64 | `asa-1.7.7-linux-x86_64.tar.gz` | 含 `asa`、`easytier-core`、`easytier-cli` |
-| Windows x86-64 | `asa-1.7.7-windows-x86_64.zip` | 含 `asa.exe`、EasyTier、`wintun.dll` |
-| Android arm64 | `asa-1.7.7-android-arm64.apk` | 真机推荐；含 arm64 EasyTier 原生库 |
-| Android x86_64 | `asa-1.7.7-android-x86_64.apk` | 模拟器 / x86_64 平板 |
-| Arch Linux x86-64 | `asa-1.7.7-1-x86_64.pkg.tar.zst` | 含二进制、EasyTier、man、桌面入口与图标 |
-| Debian / Ubuntu amd64 | `asa_1.7.7_amd64.deb` | 含二进制、EasyTier、man、桌面入口与图标 |
-| Fedora / RHEL x86-64 | `asa-1.7.7-1.x86_64.rpm` | 含二进制、EasyTier、man、桌面入口与图标 |
+| Linux x86-64 | `asa-1.7.8-linux-x86_64.tar.gz` | 含 `asa`、`easytier-core`、`easytier-cli` |
+| Windows x86-64 | `asa-1.7.8-windows-x86_64.zip` | 含 `asa.exe`、EasyTier、`wintun.dll` |
+| Android arm64 | `asa-1.7.8-android-arm64.apk` | 真机推荐；含 arm64 EasyTier 原生库 |
+| Android x86_64 | `asa-1.7.8-android-x86_64.apk` | 模拟器 / x86_64 平板 |
+| Arch Linux x86-64 | `asa-1.7.8-1-x86_64.pkg.tar.zst` | 含二进制、EasyTier、man、桌面入口与图标 |
+| Debian / Ubuntu amd64 | `asa_1.7.8_amd64.deb` | 含二进制、EasyTier、man、桌面入口与图标 |
+| Fedora / RHEL x86-64 | `asa-1.7.8-1.x86_64.rpm` | 含二进制、EasyTier、man、桌面入口与图标 |
 
 ### Linux 发行版包
 
 ```bash
 # Arch
-sudo pacman -U asa-1.7.7-1-x86_64.pkg.tar.zst
+sudo pacman -U asa-1.7.8-1-x86_64.pkg.tar.zst
 
 # Debian / Ubuntu
-sudo apt install ./asa_1.7.7_amd64.deb
+sudo apt install ./asa_1.7.8_amd64.deb
 
 # Fedora / RHEL
-sudo dnf install ./asa-1.7.7-1.x86_64.rpm
+sudo dnf install ./asa-1.7.8-1.x86_64.rpm
 ```
 
 安装后直接运行 `asa`，或从应用菜单打开 ASA。安装包是静态二进制，不依赖系统 Rust 工具链。
@@ -581,8 +581,8 @@ Android 版说明：
 - 频道列表顶部会显示局域网内发现的频道，设置密码的频道需要输入密码
 - 查看文件传输进度，或直接打开系统文件管理器中的 ASA 下载目录
 - 默认下载到公共 `Download/ASA`（Android 11+ 首次会请求“所有文件访问”；拒绝时回退应用私有目录）
-- 输入栏上方空白处点击会收起输入法；新消息在顶部显示“N 条新消息”气泡，不强制跳到底部
-- 更多菜单改为右侧边栏；长按消息可选择复制、回复或标记为问题（标记不可撤销）
+- 点击输入框和输入法以外的区域会收起输入法；新消息在顶部显示“N 条新消息”气泡，不强制跳到底部
+- 更多菜单改为右侧边栏；左滑引用、右滑标记**自己的**消息（再次右滑取消标记），上下滑动不会误触
 - 发送文件时可选择文件夹，递归发送其中每个文件
 - 设置页「关于」显示应用版本、核心版本；点「检查更新」连接 GitHub Releases 检测新版本
   - 只在手动点击时联网，不会后台轮询

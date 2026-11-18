@@ -994,17 +994,31 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
             .orEmpty()
     }
 
-    /** 本地标注“这句有问题”，不提供撤销。 */
-    fun markProblem(message: ChatMessage) {
+    /** 右滑标记/取消标记自己的消息；只允许标记自己的消息。 */
+    fun toggleProblem(message: ChatMessage) {
+        if (!message.mine) return
         val roomId = _state.value.roomId
         if (roomId.isBlank()) return
         val key = problemKey(message)
         val app = getApplication<Application>()
         val prefs = app.getSharedPreferences("asa_marked", Application.MODE_PRIVATE)
         val ids = prefs.getStringSet(roomId, emptySet())?.toMutableSet() ?: mutableSetOf()
-        if (!ids.add(key)) return
+        val marked = if (ids.remove(key)) {
+            false
+        } else {
+            ids.add(key)
+            true
+        }
         prefs.edit().putStringSet(roomId, ids).apply()
-        _state.update { it.copy(problemIds = it.problemIds + key) }
+        _state.update {
+            it.copy(
+                problemIds = if (marked) {
+                    it.problemIds + key
+                } else {
+                    it.problemIds - key
+                },
+            )
+        }
     }
 
     /** 递归发送文件夹：每个文件单独走 ASA 文件传输。 */

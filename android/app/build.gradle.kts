@@ -12,8 +12,8 @@ android {
         applicationId = "com.asa.chat"
         minSdk = 26
         targetSdk = 35
-        versionCode = 27
-        versionName = "1.7.7"
+        versionCode = 28
+        versionName = "1.7.8"
     }
 
     signingConfigs {

@@ -2,7 +2,9 @@ package com.asa.chat.ui
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -128,6 +130,7 @@ import com.asa.chat.CallStatus
 import com.asa.chat.Transfer
 import com.asa.chat.UiState
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -159,7 +162,6 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
     var showTargets by remember { mutableStateOf(false) }
     var pendingTargets by remember { mutableStateOf<List<Member>>(emptyList()) }
     var selectedTargets by remember { mutableStateOf<Set<String>>(emptySet()) }
-    var actionTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var unseen by remember { mutableIntStateOf(0) }
     var lastCount by remember { mutableIntStateOf(state.messages.size) }
     val snackbar = remember { SnackbarHostState() }
@@ -234,6 +236,16 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
         }
     }
 
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                detectTapGestures {
+                    focusManager.clearFocus()
+                    keyboard?.hide()
+                }
+            },
+    ) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbar) },
@@ -323,13 +335,7 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .pointerInput(Unit) {
-                    detectTapGestures {
-                        focusManager.clearFocus()
-                        keyboard?.hide()
-                    }
-                },
+                .padding(padding),
         ) {
             if (state.easytierEnabled && state.easytierError != null) {
                 Row(
@@ -393,14 +399,17 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
                     MessageRow(
                         message = message,
                         playingVoice = state.playingVoice,
-                        problem = (message.id.ifBlank { "ts:${message.ts}" }) in state.problemIds,
+                        problem = message.mine &&
+                            (message.id.ifBlank { "ts:${message.ts}" }) in state.problemIds,
                         onReply = { vm.setReply(message) },
-                        onLongPress = { actionTarget = message },
+                        onToggleProblem = { vm.toggleProblem(message) },
                         onPlayVoice = vm::playVoice,
                     )
                 }
             }
         }
+    }
+
     }
 
     if (showMenu) {
@@ -521,56 +530,6 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
                 }
             }
         }
-    }
-
-    actionTarget?.let { target ->
-        val key = target.id.ifBlank { "ts:${target.ts}" }
-        val marked = key in state.problemIds
-        AlertDialog(
-            onDismissRequest = { actionTarget = null },
-            shape = DialogShape,
-            title = { Text("消息操作") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    if (target.text.isNotBlank()) {
-                        TextButton(
-                            onClick = {
-                                clipboard.setText(AnnotatedString(target.text))
-                                actionTarget = null
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text("复制文本") }
-                    }
-                    TextButton(
-                        onClick = {
-                            vm.setReply(target)
-                            actionTarget = null
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("回复") }
-                    TextButton(
-                        onClick = {
-                            vm.markProblem(target)
-                            actionTarget = null
-                        },
-                        enabled = !marked,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(
-                            if (marked) "已标记为问题" else "标记为问题",
-                            color = if (marked) {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            } else {
-                                MaterialTheme.colorScheme.error
-                            },
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { actionTarget = null }) { Text("关闭") }
-            },
-        )
     }
 
     if (showMembers) {
@@ -1267,7 +1226,7 @@ private fun MessageRow(
     playingVoice: String?,
     problem: Boolean,
     onReply: () -> Unit,
-    onLongPress: () -> Unit,
+    onToggleProblem: () -> Unit,
     onPlayVoice: (String) -> Unit,
 ) {
     if (message.system) {
@@ -1284,8 +1243,7 @@ private fun MessageRow(
     }
 
     var dragX by remember { mutableFloatStateOf(0f) }
-    val shownDrag by animateFloatAsState(targetValue = dragX, label = "reply-drag")
-    val replyAlpha = (kotlin.math.abs(shownDrag) / 110f).coerceIn(0f, 1f)
+    val scope = rememberCoroutineScope()
     val bubbleColor = if (message.mine) {
         MaterialTheme.colorScheme.primaryContainer
     } else {
@@ -1312,20 +1270,24 @@ private fun MessageRow(
         }
         Box {
             Icon(
-                Icons.Filled.Reply,
-                contentDescription = "回复",
-                tint = MaterialTheme.colorScheme.primary,
+                imageVector = if (dragX < 0f) Icons.Filled.Reply else Icons.Filled.Close,
+                contentDescription = if (dragX < 0f) "回复" else "标记",
+                tint = if (dragX < 0f) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
                 modifier = Modifier
                     .align(if (message.mine) Alignment.CenterStart else Alignment.CenterEnd)
                     .size(20.dp)
-                    .alpha(replyAlpha),
+                    .alpha((kotlin.math.abs(dragX) / 110f).coerceIn(0f, 1f)),
             )
             Surface(
                 color = bubbleColor,
                 shape = BubbleShape,
                 modifier = Modifier
                     .widthIn(max = 330.dp)
-                    .offset { IntOffset(shownDrag.toInt(), 0) }
+                    .offset { IntOffset(dragX.roundToInt(), 0) }
                     .then(
                         when {
                             problem -> Modifier.border(
@@ -1337,39 +1299,69 @@ private fun MessageRow(
                             else -> Modifier
                         },
                     )
-                    .pointerInput(message.key, "long") {
-                        detectTapGestures(onLongPress = { onLongPress() })
-                    }
                     .pointerInput(message.key) {
-                        val threshold = 40.dp.toPx()
+                        val threshold = 48.dp.toPx()
                         awaitEachGesture {
                             val down = awaitFirstDown(
                                 requireUnconsumed = false,
                                 pass = PointerEventPass.Initial,
                             )
-                            var total = 0f
-                            var dragging = false
+                            var totalX = 0f
+                            var totalY = 0f
+                            // 0 未决定方向；1 横向；2 纵向
+                            var axis = 0
                             while (true) {
                                 val event = awaitPointerEvent(PointerEventPass.Initial)
                                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
                                 if (!change.pressed) {
-                                    if (dragging && kotlin.math.abs(total) >= threshold) {
-                                        onReply()
+                                    if (axis == 1 && kotlin.math.abs(totalX) >= threshold) {
+                                        if (totalX < 0f) {
+                                            onReply()
+                                        } else if (message.mine) {
+                                            onToggleProblem()
+                                        }
                                     }
                                     break
                                 }
-                                total += change.position.x - change.previousPosition.x
-                                if (!dragging &&
-                                    kotlin.math.abs(total) > viewConfiguration.touchSlop
+                                totalX += change.position.x - change.previousPosition.x
+                                totalY += change.position.y - change.previousPosition.y
+                                if (axis == 0 &&
+                                    (kotlin.math.abs(totalX) > viewConfiguration.touchSlop ||
+                                        kotlin.math.abs(totalY) > viewConfiguration.touchSlop)
                                 ) {
-                                    dragging = true
+                                    axis = if (
+                                        kotlin.math.abs(totalX) > kotlin.math.abs(totalY)
+                                    ) {
+                                        1
+                                    } else {
+                                        2
+                                    }
+                                    if (axis == 2) break
                                 }
-                                if (dragging) {
+                                if (axis == 1) {
                                     change.consume()
-                                    dragX = total.coerceIn(-threshold * 1.5f, threshold * 1.5f)
+                                    dragX = totalX.coerceIn(
+                                        -threshold * 1.5f,
+                                        threshold * 1.5f,
+                                    )
                                 }
                             }
-                            dragX = 0f
+                            if (axis == 1) {
+                                val from = dragX
+                                scope.launch {
+                                    animate(
+                                        initialValue = from,
+                                        targetValue = 0f,
+                                        animationSpec = spring(
+                                            stiffness = Spring.StiffnessMediumLow,
+                                        ),
+                                    ) { value, _ ->
+                                        dragX = value
+                                    }
+                                }
+                            } else {
+                                dragX = 0f
+                            }
                         }
                     },
             ) {
