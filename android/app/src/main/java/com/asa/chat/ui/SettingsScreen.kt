@@ -37,6 +37,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,12 +53,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.pm.PackageInfoCompat
+import com.asa.chat.AllFilesAccess
 import com.asa.chat.AppConfig
 import com.asa.chat.AsaVpnService
 import com.asa.chat.ConfigStore
 import com.asa.chat.EasytierStore
 import com.asa.chat.NativeBridge
 import com.asa.chat.UpdateChecker
+import com.asa.chat.UpdateDownloadService
+import com.asa.chat.UpdateDownloadState
 import com.asa.chat.UpdateInfo
 import org.json.JSONObject
 import java.io.File
@@ -129,10 +133,11 @@ fun SettingsScreen(
     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
     var updateNotice by remember { mutableStateOf<String?>(null) }
     var updateError by remember { mutableStateOf<String?>(null) }
-    var downloading by remember { mutableStateOf(false) }
-    var downloadDone by remember { mutableStateOf(0L) }
-    var downloadTotal by remember { mutableStateOf(0L) }
-    var downloadedFile by remember { mutableStateOf<File?>(null) }
+    val downloadState by UpdateDownloadState.state.collectAsStateWithLifecycle()
+    val downloading = downloadState.running
+    val downloadDone = downloadState.done
+    val downloadTotal = downloadState.total
+    val downloadedFile = downloadState.path?.let { File(it) }
     var installNotice by remember { mutableStateOf<String?>(null) }
 
     val checkUpdate: () -> Unit = {
@@ -164,35 +169,9 @@ fun SettingsScreen(
             if (info.apkUrl == null) {
                 UpdateChecker.openReleasePage(context, info.pageUrl)
             } else {
-                downloading = true
-                downloadDone = 0L
-                downloadTotal = 0L
-                downloadedFile = null
                 installNotice = null
                 updateError = null
-                scope.launch {
-                    val result = runCatching {
-                        UpdateChecker.download(context, info) { _, done, total ->
-                            downloadDone = done
-                            downloadTotal = total
-                        }
-                    }
-                    downloading = false
-                    result.onSuccess { file ->
-                        downloadedFile = file
-                        if (!UpdateChecker.canInstall(context)) {
-                            installNotice = "下载完成。请允许「安装未知应用」，然后点击「安装」。"
-                            UpdateChecker.requestInstallPermission(context)
-                        } else {
-                            runCatching { UpdateChecker.install(context, file) }
-                                .onFailure {
-                                    installNotice = "下载完成，但无法启动安装器：${it.message}"
-                                }
-                        }
-                    }.onFailure { error ->
-                        updateError = "下载失败：${updateErrorText(error)}"
-                    }
-                }
+                UpdateDownloadService.start(context, info.apkUrl, info.version)
             }
         }
     }
@@ -258,6 +237,22 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Text("文件", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp)
+            if (!AllFilesAccess.has(context)) {
+                Text(
+                    "未授权“所有文件访问”：文件会先保存到应用私有目录。",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                TextButton(onClick = { AllFilesAccess.request(context) }) {
+                    Text("授权并保存到 Download/ASA", fontSize = 12.sp)
+                }
+            } else {
+                Text(
+                    "默认保存到 ${AllFilesAccess.publicDownloadDir().absolutePath}",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             OutlinedTextField(
                 value = downloadDir,
                 onValueChange = { downloadDir = it },
@@ -665,6 +660,13 @@ fun SettingsScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+            }
+            downloadState.error?.let {
+                Text(
+                    "下载失败：${it}",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
             downloadedFile?.let { file ->
                 Row(

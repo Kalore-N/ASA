@@ -82,10 +82,17 @@ object UpdateChecker {
         context: Context,
         info: UpdateInfo,
         onProgress: (Boolean, Long, Long) -> Unit,
+    ): File = downloadUrl(context, info.apkUrl, info.version, onProgress)
+
+    suspend fun downloadUrl(
+        context: Context,
+        url: String?,
+        version: String,
+        onProgress: (Boolean, Long, Long) -> Unit,
     ): File = withContext(Dispatchers.IO) {
-        val url = info.apkUrl ?: error("该版本没有可用的 APK 资产")
+        val url = url ?: error("该版本没有可用的 APK 资产")
         val dir = File(context.filesDir, "asa/updates").apply { mkdirs() }
-        val file = File(dir, "asa-${info.version}-android.apk")
+        val file = File(dir, "asa-$version-android.apk")
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 15_000
             readTimeout = 30_000

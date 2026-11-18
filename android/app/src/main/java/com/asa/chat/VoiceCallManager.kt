@@ -123,6 +123,8 @@ object VoiceCallManager {
         Log.i(TAG, "voice stopped")
     }
 
+    fun isRunning(): Boolean = running
+
     fun playFrame(data: ByteArray) {
         if (data.isEmpty()) return
         runCatching { track?.write(data, 0, data.size) }

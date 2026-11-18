@@ -8,7 +8,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TAG="${TAG:-v1.7.5}"
+TAG="${TAG:-v1.7.6}"
 VERSION="${VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -1)}"
 REPO="${REPO:-Kalore-N/ASA}"
 TOKEN="${GITHUB_TOKEN:?请设置 GITHUB_TOKEN（只需 Contents: Read and write）}"

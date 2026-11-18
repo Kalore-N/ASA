@@ -23,7 +23,14 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
+import android.content.ContentResolver
+import android.provider.DocumentsContract
 import java.io.File
+
+object ScreenMemory {
+    @Volatile
+    var screen: Screen? = null
+}
 
 class AsaViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -41,6 +48,8 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private var nextKey = 0L
+    private var voiceRoomJoining = false
+    private var voiceRoomAudioFailed = false
     private var lastConfig: AppConfig? = null
 
     init {
@@ -49,8 +58,10 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
             runCatching {
                 val obj = JSONObject(NativeBridge.status())
                 if (obj.optBoolean("ok")) {
+                    val restored = ScreenMemory.screen ?: Screen.Chat
+                    ScreenMemory.screen = restored
                     _state.value = UiState(
-                        screen = Screen.Chat,
+                        screen = restored,
                         nick = obj.optString("nick"),
                         me = obj.optString("pubkey"),
                         roomId = obj.optString("room_id"),
@@ -61,6 +72,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                         groups = parseGroups(obj.optJSONArray("groups")),
                         easytierEnabled = obj.optBoolean("easytier_enabled"),
                         etSelectedNode = obj.optString("et_selected"),
+                        problemIds = loadProblemIds(app, obj.optString("room_id")),
                     )
                 }
             }
@@ -200,12 +212,17 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun setScreen(screen: Screen) {
+        ScreenMemory.screen = screen
+        _state.update { it.copy(screen = screen) }
+    }
+
     fun showConnect() {
-        _state.update { it.copy(screen = Screen.Connect) }
+        setScreen(Screen.Connect)
     }
 
     fun showGroups() {
-        _state.update { it.copy(screen = Screen.Groups) }
+        setScreen(Screen.Groups)
         refreshGroups()
     }
 
@@ -213,7 +230,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
         if (roomId == _state.value.roomId &&
             runCatching { NativeBridge.isRunning() }.getOrDefault(false)
         ) {
-            _state.update { it.copy(screen = Screen.Chat) }
+            setScreen(Screen.Chat)
             return
         }
         val app = getApplication<Application>()
@@ -316,9 +333,10 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                 put("mdns", appConfig.mdns)
                 put("max_file_mb", appConfig.maxFileMb)
                 put("auto_accept", appConfig.autoAccept)
-                if (appConfig.downloadDir.isNotBlank()) {
-                    put("download_dir", appConfig.downloadDir)
-                }
+                put(
+                    "download_dir",
+                    appConfig.downloadDir.ifBlank { ConfigStore.defaultDownloadDir(app) },
+                )
                 if (appConfig.relays.isNotEmpty()) {
                     put("relays", JSONArray(appConfig.relays))
                 }
@@ -412,6 +430,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                     app,
                     Intent(app, AsaService::class.java),
                 )
+                ScreenMemory.screen = Screen.Chat
                 _state.update {
                     it.copy(
                         screen = Screen.Chat,
@@ -435,6 +454,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                         easytierIp = if (etError == null && etEnabled) etIpv4 else null,
                         easytierError = etError,
                         etSelectedNode = etSelected,
+                        problemIds = loadProblemIds(app, obj.optString("room_id")),
                     )
                 }
             } else {
@@ -793,9 +813,12 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(error = "录音中不能加入语音房") }
             return
         }
-        if (_state.value.voiceRoom.joined) return
+        if (_state.value.voiceRoom.joined || voiceRoomJoining) return
+        voiceRoomJoining = true
+        voiceRoomAudioFailed = false
         viewModelScope.launch(Dispatchers.IO) {
             if (!ensureMic()) {
+                voiceRoomJoining = false
                 _state.update { it.copy(error = "未获得麦克风权限") }
                 return@launch
             }
@@ -803,6 +826,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                 NativeBridge.sendCommand(JSONObject().put("cmd", "voice_room_join").toString())
             }.getOrNull()
             if (result == null || result.contains("\"ok\":false")) {
+                voiceRoomJoining = false
                 _state.update { it.copy(error = "加入语音房失败") }
             } else {
                 _state.update { it.copy(info = "正在加入语音房…") }
@@ -811,6 +835,8 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun leaveVoiceRoom() {
+        voiceRoomJoining = false
+        voiceRoomAudioFailed = false
         val app = getApplication<Application>()
         VoiceCallManager.stop(app)
         _state.update {
@@ -847,6 +873,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun startVoiceRoomAudio() {
+        if (VoiceCallManager.isRunning()) return
         val app = getApplication<Application>()
         runCatching {
             VoiceCallManager.start(app) { frame ->
@@ -855,6 +882,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
             }
             VoiceCallManager.setSpeaker(app, _state.value.voiceRoom.speaker)
         }.onFailure { error ->
+            voiceRoomAudioFailed = true
             _state.update { it.copy(error = "语音房麦克风启动失败: ${error.message}") }
             runCatching {
                 NativeBridge.sendCommand(
@@ -955,6 +983,151 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun problemKey(message: ChatMessage): String =
+        message.id.ifBlank { "ts:${message.ts}" }
+
+    private fun loadProblemIds(app: Application, roomId: String): Set<String> {
+        if (roomId.isBlank()) return emptySet()
+        return app.getSharedPreferences("asa_marked", Application.MODE_PRIVATE)
+            .getStringSet(roomId, emptySet())
+            ?.toSet()
+            .orEmpty()
+    }
+
+    /** 本地标注“这句有问题”，不提供撤销。 */
+    fun markProblem(message: ChatMessage) {
+        val roomId = _state.value.roomId
+        if (roomId.isBlank()) return
+        val key = problemKey(message)
+        val app = getApplication<Application>()
+        val prefs = app.getSharedPreferences("asa_marked", Application.MODE_PRIVATE)
+        val ids = prefs.getStringSet(roomId, emptySet())?.toMutableSet() ?: mutableSetOf()
+        if (!ids.add(key)) return
+        prefs.edit().putStringSet(roomId, ids).apply()
+        _state.update { it.copy(problemIds = it.problemIds + key) }
+    }
+
+    /** 递归发送文件夹：每个文件单独走 ASA 文件传输。 */
+    fun sendFolder(treeUri: Uri, targets: List<Member>) {
+        if (targets.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val app = getApplication<Application>()
+            try {
+                val resolver = app.contentResolver
+                val rootId = DocumentsContract.getTreeDocumentId(treeUri)
+                val rootUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, rootId)
+                val rootName = queryDocumentName(resolver, rootUri) ?: "folder"
+                val outDir = File(app.cacheDir, "outgoing/folder-${System.currentTimeMillis()}")
+                    .apply { mkdirs() }
+                val files = mutableListOf<File>()
+                collectFolderFiles(
+                    resolver,
+                    treeUri,
+                    rootId,
+                    rootName,
+                    outDir,
+                    files,
+                    depth = 0,
+                )
+                if (files.isEmpty()) {
+                    _state.update { it.copy(error = "文件夹里没有可发送的文件") }
+                    return@launch
+                }
+                _state.update { it.copy(info = "正在准备 ${files.size} 个文件…") }
+                delay(1500)
+                var sent = 0
+                for (file in files) {
+                    val command = JSONObject().apply {
+                        put("cmd", "send_file_many")
+                        put("targets", JSONArray(targets.map { it.pubkey }))
+                        put("path", file.absolutePath)
+                    }
+                    val result = runCatching {
+                        NativeBridge.sendCommand(command.toString())
+                    }.getOrDefault("")
+                    if (!result.contains("\"ok\":false")) sent++
+                    delay(30)
+                }
+                _state.update {
+                    it.copy(info = "已发起 $sent/${files.size} 个文件传输")
+                }
+            } catch (err: Exception) {
+                _state.update { it.copy(error = "发送文件夹失败: ${err.message}") }
+            }
+        }
+    }
+
+    private fun queryDocumentName(resolver: ContentResolver, uri: Uri): String? {
+        return runCatching {
+            resolver.query(
+                uri,
+                arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                null,
+                null,
+                null,
+            )?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+        }.getOrNull()
+    }
+
+    private fun collectFolderFiles(
+        resolver: ContentResolver,
+        treeUri: Uri,
+        parentId: String,
+        relativeDir: String,
+        outDir: File,
+        out: MutableList<File>,
+        depth: Int,
+    ) {
+        if (depth > 8 || out.size >= 200) return
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentId)
+        runCatching {
+            resolver.query(
+                children,
+                arrayOf(
+                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    DocumentsContract.Document.COLUMN_MIME_TYPE,
+                ),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                while (cursor.moveToNext() && out.size < 200) {
+                    val id = cursor.getString(0) ?: continue
+                    val name = cursor.getString(1) ?: "file"
+                    val mime = cursor.getString(2).orEmpty()
+                    if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                        collectFolderFiles(
+                            resolver,
+                            treeUri,
+                            id,
+                            "$relativeDir/$name",
+                            outDir,
+                            out,
+                            depth + 1,
+                        )
+                    } else {
+                        val safe = (relativeDir + "_" + name)
+                            .replace(Regex("[^A-Za-z0-9._-]"), "_")
+                            .take(120)
+                        var file = File(outDir, safe)
+                        var index = 1
+                        while (file.exists()) {
+                            file = File(outDir, "${safe}_$index")
+                            index++
+                        }
+                        resolver.openInputStream(
+                            DocumentsContract.buildDocumentUriUsingTree(treeUri, id),
+                        )?.use { input ->
+                            file.outputStream().use { output -> input.copyTo(output) }
+                        }
+                        if (file.length() > 0) out.add(file)
+                    }
+                }
+            }
+        }
+    }
+
     fun acceptOffer(offer: FileOffer) {
         val command = JSONObject().put("cmd", "accept").put("xfer", offer.xfer)
         NativeBridge.sendCommand(command.toString())
@@ -974,9 +1147,11 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
         app.stopService(Intent(app, AsaService::class.java))
         runCatching { NativeBridge.stop() }
         val groups = _state.value.groups
+        val nextScreen = if (groups.isEmpty()) Screen.Connect else Screen.Groups
+        ScreenMemory.screen = nextScreen
         _state.update {
             UiState(
-                screen = if (groups.isEmpty()) Screen.Connect else Screen.Groups,
+                screen = nextScreen,
                 nick = it.nick,
                 groups = groups,
                 error = null,
@@ -988,7 +1163,7 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
 
     /// 回到频道列表（主页），但保持当前节点和后台服务运行。
     fun backToGroups() {
-        _state.update { it.copy(screen = Screen.Groups) }
+        setScreen(Screen.Groups)
         reloadGroups(getApplication())
     }
 
@@ -1303,8 +1478,12 @@ class AsaViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                     if (joined && !voiceRoom.joined) {
-                        startVoiceRoomAudio()
+                        voiceRoomJoining = false
+                        if (!voiceRoomAudioFailed && !VoiceCallManager.isRunning()) {
+                            startVoiceRoomAudio()
+                        }
                     } else if (!joined && voiceRoom.joined) {
+                        voiceRoomJoining = false
                         VoiceCallManager.stop(app)
                     }
                     voiceRoom = voiceRoom.copy(

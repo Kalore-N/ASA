@@ -110,6 +110,8 @@ data class UiState(
     val easytierIp: String? = null,
     val easytierError: String? = null,
     val etSelectedNode: String = "",
+    /// 本频道被标记为“有问题”的消息 id / ts。
+    val problemIds: Set<String> = emptySet(),
     val lanChannels: List<LanChannel> = emptyList(),
     val lanLoading: Boolean = false,
     val call: CallState = CallState(),

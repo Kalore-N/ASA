@@ -1,6 +1,6 @@
 [package]
 name = "asa"
-version = "1.7.5"
+version = "1.7.6"
 edition = "2021"
 description = "ASA - 去中心化 TUI 群聊工具"
 license = "MIT"

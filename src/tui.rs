@@ -2,7 +2,7 @@
 
 use std::io::Write as _;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::time::{Duration, Instant};
 
@@ -38,7 +38,8 @@ const HELP: &str = "\
 /invite               显示邀请码，发给朋友加入频道
 /peers                查看在线成员
 /connect <ip:port>    手动连接一个成员（跨网时用）
-/send <成员1,成员2|@all> <路径>  发送文件给多个成员；/send 空参进入成员多选
+/send <成员1,成员2|@all> <路径|目录|通配符>
+                      发送文件/文件夹（递归）；支持 *.txt、dir/*；/send 空参多选成员
 /accept <编号>        接受收到的文件
 /deny <编号>          拒绝收到的文件
 /files                查看进行中的传输
@@ -2181,10 +2182,27 @@ impl App {
                     self.set_status("没有匹配的在线成员", true);
                     return;
                 }
-                let _ = self.cmd.send(Cmd::SendFileMany {
-                    targets,
-                    path: path.into(),
-                });
+                let files = expand_send_files(path, 200);
+                if files.is_empty() {
+                    self.set_status(format!("找不到可发送的文件: {path}"), true);
+                    return;
+                }
+                for file in &files {
+                    let _ = self.cmd.send(Cmd::SendFileMany {
+                        targets: targets.clone(),
+                        path: file.clone(),
+                    });
+                }
+                self.push_system(format!(
+                    "已发起 {} 个文件传输给 {} 人{}",
+                    files.len(),
+                    targets.len(),
+                    if files.len() >= 200 {
+                        "（达到 200 个上限，已截断）"
+                    } else {
+                        ""
+                    }
+                ));
             }
             "copy" => self.copy_to_clipboard(),
             "mouse" => {
@@ -3116,6 +3134,120 @@ fn body_layout(area: Rect, wide: bool) -> (Rect, Option<(Rect, Rect)>) {
     )
     .split(cols[1]);
     (cols[0], Some((rows[0], rows[1])))
+}
+
+/// 简单的 `*` / `?` 通配符匹配（不区分路径层级）。
+fn wildcard_match(pattern: &str, name: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let n: Vec<char> = name.chars().collect();
+    let (mut pi, mut ni) = (0usize, 0usize);
+    let (mut star, mut mark) = (None, 0usize);
+    while ni < n.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == n[ni]) {
+            pi += 1;
+            ni += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            mark = ni;
+            pi += 1;
+        } else if let Some(s) = star {
+            pi = s + 1;
+            mark += 1;
+            ni = mark;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+/// 展开通配符路径；只支持文件名/目录名中的 `*` 和 `?`。
+fn expand_glob(pattern: &Path) -> Vec<PathBuf> {
+    use std::path::Component;
+    let mut current: Vec<PathBuf> = vec![PathBuf::new()];
+    for component in pattern.components() {
+        match component {
+            Component::RootDir => current = vec![PathBuf::from("/")],
+            Component::Prefix(prefix) => {
+                current = vec![PathBuf::from(prefix.as_os_str())];
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                current = current.into_iter().map(|base| base.join("..")).collect();
+            }
+            Component::Normal(name) => {
+                let name = name.to_string_lossy();
+                if name.contains('*') || name.contains('?') {
+                    let mut next = Vec::new();
+                    for base in &current {
+                        let dir = if base.as_os_str().is_empty() {
+                            Path::new(".")
+                        } else {
+                            base.as_path()
+                        };
+                        let Ok(entries) = std::fs::read_dir(dir) else {
+                            continue;
+                        };
+                        for entry in entries.flatten() {
+                            let file_name = entry.file_name().to_string_lossy().to_string();
+                            if file_name.starts_with('.') && !name.starts_with('.') {
+                                continue;
+                            }
+                            if wildcard_match(&name, &file_name) {
+                                next.push(base.join(file_name));
+                            }
+                        }
+                    }
+                    current = next;
+                } else {
+                    current = current
+                        .into_iter()
+                        .map(|base| base.join(name.as_ref()))
+                        .collect();
+                }
+            }
+        }
+    }
+    current
+}
+
+fn collect_send_files(path: &Path, out: &mut Vec<PathBuf>, limit: usize, depth: usize) {
+    if out.len() >= limit || depth > 12 {
+        return;
+    }
+    if path.is_file() {
+        if !out.contains(&path.to_path_buf()) {
+            out.push(path.to_path_buf());
+        }
+        return;
+    }
+    if let Ok(entries) = std::fs::read_dir(path) {
+        let mut entries: Vec<_> = entries.flatten().collect();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            collect_send_files(&entry.path(), out, limit, depth + 1);
+            if out.len() >= limit {
+                break;
+            }
+        }
+    }
+}
+
+/// 把 `/send` 的路径参数展开成文件列表：支持目录递归和 `*`/`?` 通配符。
+fn expand_send_files(raw: &str, limit: usize) -> Vec<PathBuf> {
+    let expanded = crate::util::expand_tilde(raw);
+    let pattern = PathBuf::from(expanded);
+    let mut out = Vec::new();
+    for candidate in expand_glob(&pattern) {
+        collect_send_files(&candidate, &mut out, limit, 0);
+        if out.len() >= limit {
+            break;
+        }
+    }
+    out
 }
 
 /// 文件/目录路径补全。返回替换当前 token 的候选值；目录以 `/` 结尾。
@@ -4591,5 +4723,33 @@ pub fn lobby(dirs: RuntimeDirs, identity: Identity, nick: String) -> Result<Opti
                 _ => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod send_tests {
+    use super::*;
+
+    #[test]
+    fn wildcard_and_folder_expansion() {
+        let root = std::env::temp_dir().join(format!("asa-send-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("a.txt"), b"a").unwrap();
+        std::fs::write(root.join("b.txt"), b"b").unwrap();
+        std::fs::write(root.join("sub").join("c.dat"), b"c").unwrap();
+
+        let txt = expand_send_files(&format!("{}/*.txt", root.display()), 100);
+        assert_eq!(txt.len(), 2, "{txt:?}");
+
+        let all = expand_send_files(&root.display().to_string(), 100);
+        assert_eq!(all.len(), 3, "{all:?}");
+
+        let dat = expand_send_files(&format!("{}/sub/*.dat", root.display()), 100);
+        assert_eq!(dat.len(), 1, "{dat:?}");
+
+        assert!(wildcard_match("*.txt", "a.txt"));
+        assert!(!wildcard_match("*.txt", "a.dat"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -1,6 +1,12 @@
 package com.asa.chat.ui
 
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -8,6 +14,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,7 +23,10 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
@@ -28,6 +38,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -41,6 +53,8 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.Reply
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
@@ -72,17 +86,25 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextRange
@@ -92,8 +114,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.asa.chat.AsaViewModel
 import com.asa.chat.R
 import com.asa.chat.ChatMessage
@@ -102,9 +127,11 @@ import com.asa.chat.Member
 import com.asa.chat.CallStatus
 import com.asa.chat.Transfer
 import com.asa.chat.UiState
+import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import android.net.Uri
 
 private val BubbleShape = RoundedCornerShape(8.dp)
 private val FieldShape = RoundedCornerShape(6.dp)
@@ -132,17 +159,55 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
     var showTargets by remember { mutableStateOf(false) }
     var pendingTargets by remember { mutableStateOf<List<Member>>(emptyList()) }
     var selectedTargets by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var actionTarget by remember { mutableStateOf<ChatMessage?>(null) }
+    var unseen by remember { mutableIntStateOf(0) }
+    var lastCount by remember { mutableIntStateOf(state.messages.size) }
     val snackbar = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
     val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    val atBottom by remember {
+        derivedStateOf { !listState.canScrollForward }
+    }
 
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null && pendingTargets.isNotEmpty()) {
             vm.sendFile(uri, pendingTargets)
         }
     }
+    val pickFolder = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        if (uri != null && pendingTargets.isNotEmpty()) {
+            vm.sendFolder(uri, pendingTargets)
+        }
+    }
 
+    LaunchedEffect(Unit) {
+        if (state.messages.isNotEmpty()) {
+            listState.scrollToItem(state.messages.lastIndex)
+        }
+    }
     LaunchedEffect(state.messages.size) {
+        val count = state.messages.size
+        if (count > lastCount) {
+            val added = count - lastCount
+            val mine = state.messages.lastOrNull()?.mine == true
+            if (atBottom || mine) {
+                listState.animateScrollToItem(count - 1)
+                unseen = 0
+            } else {
+                unseen += added
+            }
+        }
+        lastCount = count
+    }
+    LaunchedEffect(atBottom) {
+        if (atBottom) unseen = 0
+    }
+    LaunchedEffect(state.replyTarget) {
         if (state.messages.isNotEmpty()) {
             listState.animateScrollToItem(state.messages.lastIndex)
         }
@@ -221,116 +286,8 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
                     IconButton(onClick = { showCallPicker = true }) {
                         Icon(Icons.Filled.Call, contentDescription = "语音通话")
                     }
-                    Box {
-                        IconButton(onClick = { showMenu = true }) {
-                            Icon(Icons.Filled.MoreVert, contentDescription = "更多")
-                        }
-                        DropdownMenu(
-                            expanded = showMenu,
-                            onDismissRequest = { showMenu = false },
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("在线成员") },
-                                onClick = {
-                                    showMenu = false
-                                    showMembers = true
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("邀请码") },
-                                onClick = {
-                                    showMenu = false
-                                    showInvite = true
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("同步聊天记录") },
-                                onClick = {
-                                    showMenu = false
-                                    vm.sync()
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("进行中的传输") },
-                                onClick = {
-                                    showMenu = false
-                                    showTransfers = true
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("发送语音消息") },
-                                onClick = {
-                                    showMenu = false
-                                    showVoicePicker = true
-                                },
-                            )
-                            if (state.lastVoicePath != null) {
-                                DropdownMenuItem(
-                                    text = { Text("播放最近语音") },
-                                    onClick = {
-                                        showMenu = false
-                                        vm.playLastVoice()
-                                    },
-                                )
-                            }
-                            DropdownMenuItem(
-                                text = { Text("打开下载目录") },
-                                onClick = {
-                                    showMenu = false
-                                    vm.openDownloads()
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("发送文件") },
-                                onClick = {
-                                    showMenu = false
-                                    showTargets = true
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("修改频道名称") },
-                                onClick = {
-                                    showMenu = false
-                                    showRename = true
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("修改昵称") },
-                                onClick = {
-                                    showMenu = false
-                                    showNick = true
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("手动连接") },
-                                onClick = {
-                                    showMenu = false
-                                    showConnect = true
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("切换频道") },
-                                onClick = {
-                                    showMenu = false
-                                    vm.backToGroups()
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("设置") },
-                                onClick = {
-                                    showMenu = false
-                                    onOpenSettings()
-                                },
-                            )
-                            HorizontalDivider()
-                            DropdownMenuItem(
-                                text = { Text("退出频道", color = MaterialTheme.colorScheme.error) },
-                                onClick = {
-                                    showMenu = false
-                                    showExitConfirm = true
-                                },
-                            )
-                        }
+                    IconButton(onClick = { showMenu = true }) {
+                        Icon(Icons.Filled.MoreVert, contentDescription = "更多")
                     }
                 },
             )
@@ -352,6 +309,13 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
                     onAccept = vm::acceptOffer,
                     onReject = vm::rejectOffer,
                     onVoice = vm::toggleVoiceInput,
+                    onFocused = {
+                        if (state.messages.isNotEmpty()) {
+                            scope.launch {
+                                listState.animateScrollToItem(state.messages.lastIndex)
+                            }
+                        }
+                    },
                 )
             }
         },
@@ -359,7 +323,13 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
+                .padding(padding)
+                .pointerInput(Unit) {
+                    detectTapGestures {
+                        focusManager.clearFocus()
+                        keyboard?.hide()
+                    }
+                },
         ) {
             if (state.easytierEnabled && state.easytierError != null) {
                 Row(
@@ -381,6 +351,36 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
                     TextButton(onClick = { vm.restartChannel() }) { Text("重连", fontSize = 12.sp) }
                 }
             }
+            if (unseen > 0) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.primaryContainer)
+                        .clickable {
+                            unseen = 0
+                            if (state.messages.isNotEmpty()) {
+                                scope.launch {
+                                    listState.animateScrollToItem(state.messages.lastIndex)
+                                }
+                            }
+                        }
+                        .padding(horizontal = 12.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "$unseen 条新消息 · 点击查看",
+                        modifier = Modifier.weight(1f),
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                    Icon(
+                        Icons.Filled.ArrowDownward,
+                        contentDescription = "到底部",
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
+            }
             LazyColumn(
                 state = listState,
                 modifier = Modifier
@@ -393,12 +393,184 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
                     MessageRow(
                         message = message,
                         playingVoice = state.playingVoice,
+                        problem = (message.id.ifBlank { "ts:${message.ts}" }) in state.problemIds,
                         onReply = { vm.setReply(message) },
+                        onLongPress = { actionTarget = message },
                         onPlayVoice = vm::playVoice,
                     )
                 }
             }
         }
+    }
+
+    if (showMenu) {
+        Dialog(
+            onDismissRequest = { showMenu = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Box(Modifier.fillMaxSize()) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.42f))
+                        .clickable { showMenu = false },
+                )
+                AnimatedVisibility(
+                    visibleState = remember {
+                        androidx.compose.animation.core.MutableTransitionState(false)
+                            .apply { targetState = true }
+                    },
+                    modifier = Modifier.align(Alignment.CenterEnd),
+                    enter = slideInHorizontally { it } + fadeIn(),
+                    exit = slideOutHorizontally { it } + fadeOut(),
+                ) {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .width(300.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .verticalScroll(rememberScrollState())
+                                .padding(vertical = 8.dp),
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    "菜单",
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                IconButton(onClick = { showMenu = false }) {
+                                    Icon(Icons.Filled.Close, contentDescription = "关闭")
+                                }
+                            }
+                            HorizontalDivider()
+                            SideMenuRow("在线成员") {
+                                showMenu = false
+                                showMembers = true
+                            }
+                            SideMenuRow("邀请码") {
+                                showMenu = false
+                                showInvite = true
+                            }
+                            SideMenuRow("同步聊天记录") {
+                                showMenu = false
+                                vm.sync()
+                            }
+                            SideMenuRow("进行中的传输") {
+                                showMenu = false
+                                showTransfers = true
+                            }
+                            SideMenuRow("发送语音消息") {
+                                showMenu = false
+                                showVoicePicker = true
+                            }
+                            if (state.lastVoicePath != null) {
+                                SideMenuRow("播放最近语音") {
+                                    showMenu = false
+                                    vm.playLastVoice()
+                                }
+                            }
+                            SideMenuRow("发送文件 / 文件夹") {
+                                showMenu = false
+                                showTargets = true
+                            }
+                            SideMenuRow("打开下载目录") {
+                                showMenu = false
+                                vm.openDownloads()
+                            }
+                            HorizontalDivider()
+                            SideMenuRow("修改频道名称") {
+                                showMenu = false
+                                showRename = true
+                            }
+                            SideMenuRow("修改昵称") {
+                                showMenu = false
+                                showNick = true
+                            }
+                            SideMenuRow("手动连接") {
+                                showMenu = false
+                                showConnect = true
+                            }
+                            SideMenuRow("切换频道") {
+                                showMenu = false
+                                vm.backToGroups()
+                            }
+                            SideMenuRow("设置") {
+                                showMenu = false
+                                onOpenSettings()
+                            }
+                            HorizontalDivider()
+                            SideMenuRow(
+                                "退出频道",
+                                color = MaterialTheme.colorScheme.error,
+                            ) {
+                                showMenu = false
+                                showExitConfirm = true
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    actionTarget?.let { target ->
+        val key = target.id.ifBlank { "ts:${target.ts}" }
+        val marked = key in state.problemIds
+        AlertDialog(
+            onDismissRequest = { actionTarget = null },
+            shape = DialogShape,
+            title = { Text("消息操作") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    if (target.text.isNotBlank()) {
+                        TextButton(
+                            onClick = {
+                                clipboard.setText(AnnotatedString(target.text))
+                                actionTarget = null
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("复制文本") }
+                    }
+                    TextButton(
+                        onClick = {
+                            vm.setReply(target)
+                            actionTarget = null
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("回复") }
+                    TextButton(
+                        onClick = {
+                            vm.markProblem(target)
+                            actionTarget = null
+                        },
+                        enabled = !marked,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            if (marked) "已标记为问题" else "标记为问题",
+                            color = if (marked) {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                MaterialTheme.colorScheme.error
+                            },
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { actionTarget = null }) { Text("关闭") }
+            },
+        )
     }
 
     if (showMembers) {
@@ -743,7 +915,7 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
         AlertDialog(
             onDismissRequest = { showTargets = false },
             shape = DialogShape,
-            title = { Text("选择文件接收人") },
+            title = { Text("选择发送对象") },
             text = {
                 if (targets.isEmpty()) {
                     Text("当前没有其他在线成员。", fontSize = 13.sp)
@@ -800,14 +972,24 @@ fun ChatScreen(state: UiState, vm: AsaViewModel, onOpenSettings: () -> Unit) {
             },
             confirmButton = {
                 if (targets.isNotEmpty()) {
-                    TextButton(
-                        enabled = selectedTargets.isNotEmpty(),
-                        onClick = {
-                            pendingTargets = targets.filter { it.pubkey in selectedTargets }
-                            showTargets = false
-                            pickFile.launch(arrayOf("*/*"))
-                        },
-                    ) { Text("选择文件") }
+                    Row {
+                        TextButton(
+                            enabled = selectedTargets.isNotEmpty(),
+                            onClick = {
+                                pendingTargets = targets.filter { it.pubkey in selectedTargets }
+                                showTargets = false
+                                pickFile.launch(arrayOf("*/*"))
+                            },
+                        ) { Text("选择文件") }
+                        TextButton(
+                            enabled = selectedTargets.isNotEmpty(),
+                            onClick = {
+                                pendingTargets = targets.filter { it.pubkey in selectedTargets }
+                                showTargets = false
+                                pickFolder.launch(null)
+                            },
+                        ) { Text("选择文件夹") }
+                    }
                 }
             },
             dismissButton = {
@@ -890,6 +1072,7 @@ private fun Composer(
     onAccept: (FileOffer) -> Unit,
     onReject: (FileOffer) -> Unit,
     onVoice: () -> Unit,
+    onFocused: () -> Unit,
 ) {
     val text = input.text
     val mentionStart = text.lastIndexOf('@')
@@ -982,7 +1165,9 @@ private fun Composer(
             OutlinedTextField(
                 value = input,
                 onValueChange = onInputChange,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .onFocusChanged { if (it.isFocused) onFocused() },
                 placeholder = { Text("输入消息，@ 提及成员") },
                 shape = FieldShape,
                 maxLines = 4,
@@ -1080,7 +1265,9 @@ private fun TransferRow(transfer: Transfer) {
 private fun MessageRow(
     message: ChatMessage,
     playingVoice: String?,
+    problem: Boolean,
     onReply: () -> Unit,
+    onLongPress: () -> Unit,
     onPlayVoice: (String) -> Unit,
 ) {
     if (message.system) {
@@ -1096,6 +1283,9 @@ private fun MessageRow(
         return
     }
 
+    var dragX by remember { mutableFloatStateOf(0f) }
+    val shownDrag by animateFloatAsState(targetValue = dragX, label = "reply-drag")
+    val replyAlpha = (kotlin.math.abs(shownDrag) / 110f).coerceIn(0f, 1f)
     val bubbleColor = if (message.mine) {
         MaterialTheme.colorScheme.primaryContainer
     } else {
@@ -1120,107 +1310,145 @@ private fun MessageRow(
                 fontWeight = FontWeight.SemiBold,
             )
         }
-        Surface(
-            color = bubbleColor,
-            shape = BubbleShape,
-            modifier = Modifier
-                .widthIn(max = 330.dp)
-                .then(
-                    if (message.mentionsMe) {
-                        Modifier.border(1.dp, AsaWarning, BubbleShape)
-                    } else {
-                        Modifier
-                    },
-                )
-                .pointerInput(message.key) {
-                    val threshold = 72.dp.toPx()
-                    awaitEachGesture {
-                        val down = awaitFirstDown(
-                            requireUnconsumed = false,
-                            pass = PointerEventPass.Initial,
-                        )
-                        var total = 0f
-                        var dragging = false
-                        while (true) {
-                            val event = awaitPointerEvent(PointerEventPass.Initial)
-                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                            if (!change.pressed) {
-                                if (dragging && total <= -threshold) onReply()
-                                break
-                            }
-                            total += change.position.x - change.previousPosition.x
-                            if (!dragging && kotlin.math.abs(total) > viewConfiguration.touchSlop) {
-                                dragging = true
-                            }
-                            if (dragging) {
-                                change.consume()
-                            }
-                        }
-                    }
-                },
-        ) {
-            Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
-                message.reply?.let { reply ->
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .background(
-                                MaterialTheme.colorScheme.background.copy(alpha = 0.45f),
-                                FieldShape,
+        Box {
+            Icon(
+                Icons.Filled.Reply,
+                contentDescription = "回复",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .align(if (message.mine) Alignment.CenterStart else Alignment.CenterEnd)
+                    .size(20.dp)
+                    .alpha(replyAlpha),
+            )
+            Surface(
+                color = bubbleColor,
+                shape = BubbleShape,
+                modifier = Modifier
+                    .widthIn(max = 330.dp)
+                    .offset { IntOffset(shownDrag.toInt(), 0) }
+                    .then(
+                        when {
+                            problem -> Modifier.border(
+                                2.dp,
+                                MaterialTheme.colorScheme.error,
+                                BubbleShape,
                             )
-                            .padding(horizontal = 7.dp, vertical = 5.dp),
-                    ) {
-                        Text(
-                            reply.nick,
-                            fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                        Text(
-                            reply.preview,
-                            fontSize = 11.sp,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                            message.mentionsMe -> Modifier.border(1.dp, AsaWarning, BubbleShape)
+                            else -> Modifier
+                        },
+                    )
+                    .pointerInput(message.key, "long") {
+                        detectTapGestures(onLongPress = { onLongPress() })
                     }
-                    Spacer(Modifier.height(5.dp))
-                }
-                val voicePath = message.voicePath
-                if (voicePath != null) {
-                    val playing = playingVoice == voicePath
+                    .pointerInput(message.key) {
+                        val threshold = 40.dp.toPx()
+                        awaitEachGesture {
+                            val down = awaitFirstDown(
+                                requireUnconsumed = false,
+                                pass = PointerEventPass.Initial,
+                            )
+                            var total = 0f
+                            var dragging = false
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!change.pressed) {
+                                    if (dragging && kotlin.math.abs(total) >= threshold) {
+                                        onReply()
+                                    }
+                                    break
+                                }
+                                total += change.position.x - change.previousPosition.x
+                                if (!dragging &&
+                                    kotlin.math.abs(total) > viewConfiguration.touchSlop
+                                ) {
+                                    dragging = true
+                                }
+                                if (dragging) {
+                                    change.consume()
+                                    dragX = total.coerceIn(-threshold * 1.5f, threshold * 1.5f)
+                                }
+                            }
+                            dragX = 0f
+                        }
+                    },
+            ) {
+                Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+                    message.reply?.let { reply ->
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    MaterialTheme.colorScheme.background.copy(alpha = 0.45f),
+                                    FieldShape,
+                                )
+                                .padding(horizontal = 7.dp, vertical = 4.dp),
+                        ) {
+                            Text(
+                                reply.nick,
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                            Text(
+                                reply.preview,
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Spacer(Modifier.height(4.dp))
+                    }
+                    val voicePath = message.voicePath
+                    if (voicePath != null) {
+                        val playing = playingVoice == voicePath
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onPlayVoice(voicePath) }
+                                .padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                if (playing) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+                                contentDescription = if (playing) "停止播放" else "播放语音",
+                                tint = contentColor,
+                                modifier = Modifier.size(22.dp),
+                            )
+                            Spacer(Modifier.size(6.dp))
+                            Text(
+                                if (playing) "播放中… 点击停止" else "语音消息 · 点击播放",
+                                color = contentColor,
+                                fontSize = 15.sp,
+                            )
+                        }
+                    } else {
+                        Text(message.text, color = contentColor, fontSize = 15.sp)
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onPlayVoice(voicePath) }
-                            .padding(vertical = 2.dp),
+                            .padding(top = 2.dp),
                         verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.End,
                     ) {
-                        Icon(
-                            if (playing) Icons.Filled.Stop else Icons.Filled.PlayArrow,
-                            contentDescription = if (playing) "停止播放" else "播放语音",
-                            tint = contentColor,
-                            modifier = Modifier.size(22.dp),
-                        )
-                        Spacer(Modifier.size(6.dp))
+                        if (problem) {
+                            Text(
+                                "× 已标注问题",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.weight(1f),
+                            )
+                        } else {
+                            Spacer(Modifier.weight(1f))
+                        }
                         Text(
-                            if (playing) "播放中… 点击停止" else "语音消息 · 点击播放",
-                            color = contentColor,
-                            fontSize = 15.sp,
+                            timeText(message.ts),
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                    }
-                } else {
-                    SelectionContainer {
-                        Text(message.text, color = contentColor, fontSize = 15.sp)
                     }
                 }
-                Text(
-                    timeText(message.ts),
-                    modifier = Modifier
-                        .align(Alignment.End)
-                        .padding(top = 2.dp),
-                    fontSize = 10.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
         }
         if (message.mentionsMe) {
@@ -1257,4 +1485,26 @@ private fun humanSize(bytes: Long): String {
     val mb = kb / 1024.0
     if (mb < 1024) return String.format("%.1f MB", mb)
     return String.format("%.1f GB", mb / 1024.0)
+}
+
+@Composable
+private fun SideMenuRow(
+    text: String,
+    color: Color = MaterialTheme.colorScheme.onSurface,
+    onClick: () -> Unit,
+) {
+    TextButton(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = FieldShape,
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+    ) {
+        Text(
+            text,
+            modifier = Modifier.fillMaxWidth(),
+            textAlign = TextAlign.Start,
+            color = color,
+            fontSize = 14.sp,
+        )
+    }
 }

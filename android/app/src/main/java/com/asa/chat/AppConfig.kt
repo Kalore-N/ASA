@@ -29,7 +29,11 @@ object ConfigStore {
         File(context.filesDir, "asa/runtime/data/config.json")
 
     fun defaultDownloadDir(context: Context): String =
-        File(context.filesDir, "asa/runtime/downloads").absolutePath
+        if (AllFilesAccess.has(context)) {
+            AllFilesAccess.publicDownloadDir().absolutePath
+        } else {
+            File(context.filesDir, "asa/runtime/downloads").absolutePath
+        }
 
     fun defaultJson(): JSONObject = JSONObject().apply {
         put("version", 2)
