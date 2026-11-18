@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           asa
-Version:        1.7.6
+Version:        1.7.7
 Release:        1%{?dist}
 Summary:        去中心化 TUI 群聊
 License:        MIT
@@ -12,7 +12,7 @@ Requires:       libcap
 Requires:       alsa-utils
 Recommends:     ffmpeg
 
-Source0:        asa-1.7.6
+Source0:        asa-1.7.7
 Source1:        asa.desktop
 Source2:        asa.1.gz
 Source3:        asa.png
